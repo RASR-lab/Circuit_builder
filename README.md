@@ -1,7 +1,7 @@
 # Circuit Builder
 
 A simple circuit and wiring editor for Windows, made for undergraduate labs.
-Drag parts onto a grid, click pin-to-pin to wire them, and create your own parts with any pins you need.
+Drag parts onto a grid, click pin-to-pin to wire them, create your own parts with any pins you need, and **simulate the circuit** to see voltages, currents, glowing LEDs and waveforms.
 
 ![Circuit Builder](screenshot.png)
 
@@ -41,12 +41,58 @@ Click **More info → Run anyway**.
 | Undo / redo | **Ctrl+Z** / **Ctrl+Y** |
 | Zoom / move around | Mouse wheel zooms; right- or middle-drag pans; **0** fits the circuit |
 | Select several things | Drag a box around them, or Ctrl+click |
+| Simulate | **▶ Simulate** (top right) or **F5**; press again to stop |
 
 Pins show **filled** when connected and **hollow** while still free.
 Hover over a pin to see its name and which net it is on.
 
 **Ground and power rails:** every Ground symbol is connected together, and so is every Power Rail (VCC) with the same value (e.g. `+5 V`).
 You can put a ground symbol wherever it's convenient instead of running long wires.
+
+## Simulating a circuit
+
+Press **▶ Simulate** (or **F5**). A green bar appears under the toolbar and the circuit starts running:
+
+- **Voltages appear on the wires** (each net, measured from Ground). Turn them off under *Simulate › Show voltages on wires*.
+- **LEDs and lamps glow** in proportion to their current, motors spin, buzzers show a ♪, blown fuses get a red ✕.
+- **Voltmeters, ammeters and voltage probes** show a reading next to them.
+- **Hover over any part** for its voltage, current and power. **Click a part** to see full live readings in the right-hand panel, including the voltage and current at every pin (a transistor also shows whether it is off, amplifying or saturated).
+- **Interact:** click a switch to flip it, hold the mouse down on a push button to press it. Potentiometers (wiper position), LDRs (light level) and the TMP36 sensor (temperature) get a slider in the right-hand panel.
+- **Keep editing:** add parts, rewire, change values or undo while it runs; the simulation updates straight away.
+- **Messages:** click an empty spot on the canvas (or the message at the right of the green bar) to see warnings, e.g. an LED with no series resistor ("a real LED would burn out"), a ¼-watt resistor that would overheat, a reversed electrolytic capacitor, a 7805 without enough input voltage, or a short circuit. Click a message to select that part.
+
+The green bar also has **Pause**, **Restart** (back to time zero: capacitors empty, fuses replaced) and a **Speed** setting.
+*Auto* picks a speed that suits the circuit: a 1 kHz filter runs about 500× slower than real time so you can watch the waves, while a 555 blinker at 1 Hz runs in real time.
+
+**Oscilloscope.** Right-click a wire (*Plot this voltage*) or a part (*Plot voltage across* / *Plot current through*) to add it to the oscilloscope, or use the **Oscilloscope** button. Voltage probes and meters are added automatically. Choose how much time is shown, pause, clear, and **Export CSV** to analyse the data in Excel.
+
+**Frequency response (Bode plot).** *Simulate › Frequency response* (or the button in the green bar) feeds a small sine wave into the chosen source and plots gain (dB) and phase at the chosen measuring point from, say, 10 Hz to 1 MHz. It reports the −3 dB cutoff of low-pass, high-pass and band-pass circuits, and you can hover the plot to read exact values or export it as CSV.
+
+**What is simulated:** resistors, potentiometers, LDRs, fuses, capacitors (including electrolytic), inductors, batteries (with a small internal resistance), DC / AC / square-wave sources, current sources, power rails, voltmeters, ammeters, voltage probes, switches, push buttons, lamps, motors, buzzers, diodes, Zener diodes, LEDs, NPN / PNP transistors, N-MOSFETs, op-amps, logic gates (5 V logic), the 555 timer, the 7805 regulator, the TMP36 sensor and the relay module.
+Microcontroller boards (Arduino, Pico), digital modules (LCD, ultrasonic sensor, servo), generic ICs and parts you make yourself are **not** simulated (their pins are left unconnected). A copy of a simulated part, for example a 555 you gave a picture, still simulates as long as its pin names stay the same.
+
+**Values the simulator reads** from each part's *Value* box:
+
+| Part | Examples |
+|---|---|
+| Resistor, potentiometer | `470 Ω`, `4.7k`, `1 MΩ` |
+| Capacitor, inductor | `100 nF`, `10 µF` (or `10 uF`), `1 mH` |
+| Battery, DC source, power rail | `9 V`, `+5 V`, `-12 V` |
+| AC source | `10 V 60 Hz` (peak), `120 V rms 60 Hz`, `20 Vpp 1 kHz` |
+| Square-wave source | `5 V 1 Hz` (0 V to 5 V, 50 % duty) |
+| Current source, fuse | `1 mA`, `500 mA` |
+| Lamp, motor | `6 V 1 W`, `6 V 0.2 A` (rated values) |
+| LED | `Red`, `Green`, `Blue`, `Yellow`, `White` … (sets the forward voltage and glow color) |
+| Zener diode | `5.1 V` |
+| Diode | `1N4148` (default), `1N4001`, `1N5817` / `Schottky` |
+| Transistor | `hFE=200` sets the current gain (default about 150) |
+| N-MOSFET | `2N7000` (default), `IRF540`, `IRLZ44` |
+| Op-amp | `LM741` (default), `LM358` (output reaches V−), `rail-to-rail` |
+
+The models are simplified for learning (like SPICE, but with typical values): an op-amp has a gain of 200 000 and its output stops about 1.5 V short of its supply rails (±15 V is assumed if V+/V− aren't wired); logic gates switch at 2.5 V and output 0 V or 5 V; the relay module switches COM to NO when IN is HIGH.
+Expect small differences from a lab measurement, just as with any simulator.
+
+*File › Open example* has three circuits made for simulating: an **RC low-pass filter** (try the oscilloscope and the Bode plot), a **transistor switch** (hold the push button) and a **555 LED blinker**.
 
 ## Making your own components
 
@@ -57,6 +103,7 @@ Click **+ New Component** (top right), then:
    Type several names at once separated by commas, e.g. `VCC, GND, SDA, SCL`.
    Use **Move up/down** to reorder and **Add gap** to leave space between groups of pins.
    For chips, **Quick start: chip (DIP) with N pins** creates numbered pins 1…N in the standard order.
+   For an Arduino-style board, tick **This is a microcontroller or dev board** so Check circuit ignores its unused pins.
 3. **Preview** updates as you go. Click **Save to library**.
 
 Your parts appear under their category (marked ★) and are remembered for next time.
@@ -88,20 +135,25 @@ Circuit files also carry the custom parts they use, so opening someone's `.circu
 ## Checking your work
 
 - **Connections** (toolbar) lists every *net*, a group of pins wired together that share the same voltage.
-  Click a net to highlight it on the drawing. Export it as text, CSV (Excel), or a basic **SPICE** netlist for R, C, L, sources, diodes, LEDs and BJTs.
+  Click a net to highlight it on the drawing. Export it as text, CSV (Excel), or a basic **SPICE** netlist for R, C, L, sources, diodes, LEDs, Zeners and BJTs.
 - **Check circuit** warns about shorted batteries and sources, parts that are shorted or not connected, free pins, and a missing ground.
   Double-click a message to jump to that part.
+- **Microcontrollers:** a board like an Arduino uses only a few of its pins, so Check circuit doesn't list unused pins on parts marked as a microcontroller.
+  Instead it warns if none of the board's GND pins is wired, and notes if no power pin (5V, VIN, 3V3 …) is wired (fine when the board runs on USB).
+  The built-in Arduino Uno is already marked. For your own boards, tick **This is a microcontroller or dev board** under **Pins** in the Component Editor.
+  To change it for one part in a circuit, click the part and use the **Microcontroller / dev board** checkbox in the right-hand panel (saved in the `.circuit` file).
+- **Simulate** (see above) shows what the circuit actually does and flags parts that would be damaged.
 - **File › Export image (SVG)** saves a clean drawing for lab reports, pictures included. It opens in any browser, Word or PowerPoint.
 
 ## Built-in parts
 
-Resistor, capacitor, electrolytic capacitor, inductor, potentiometer, LDR, fuse, battery, DC/AC voltage source, current source, power rail, ground, voltmeter, ammeter, switch, push button, lamp, DC motor, buzzer, diode, LED, NPN/PNP transistors, N-MOSFET, op-amp, AND/NAND/OR/NOR/XOR/NOT gates, Arduino Uno, 555 timer, 7805 regulator, generic 8- and 14-pin ICs, servo, ultrasonic sensor, TMP36, I2C LCD and relay module.
+Resistor, capacitor, electrolytic capacitor, inductor, potentiometer, LDR, fuse, battery, DC/AC voltage source, square-wave source, current source, power rail, ground, voltmeter, ammeter, voltage probe, switch, push button, lamp, DC motor, buzzer, diode, Zener diode, LED, NPN/PNP transistors, N-MOSFET, op-amp, AND/NAND/OR/NOR/XOR/NOT gates, Arduino Uno, Raspberry Pi Pico, 555 timer, 7805 regulator, generic 8- and 14-pin ICs, servo, ultrasonic sensor, TMP36, I2C LCD and relay module.
 
-*File › Open example* has three ready-made circuits (also in the `examples` folder).
+*File › Open example* has six ready-made circuits (the first three are also in the `examples` folder).
 
 ## Files and storage
 
-- Circuits are saved as `.circuit` files (plain JSON, easy to grade or diff).
+- Circuits are saved as `.circuit` files (plain JSON, easy to grade or diff). Switch positions and slider settings are saved with the circuit.
 - Your component library and settings live in `%APPDATA%\CircuitBuilder\`.
   Copy `my_components.cblib` from there to back them up.
 - To open a `.circuit` file by double-clicking, right-click it → *Open with* → choose `CircuitBuilder.exe`.
@@ -116,10 +168,17 @@ BX("dht22", "DHT22 Sensor", "Modules & Sensors", "U", "", "Temperature & humidit
    5, 4, [("VCC", "left", 1), ("DATA", "left", 2), ("GND", "left", 3)], color="#fef3c7"),
 ```
 
+To make a new part simulate, add a branch for its id in `_make_device()` (search for it in `circuit_builder.py`) using one of the existing models, for example `Resistor`, `VSource` or `Diode`, and add the id to `SIM_MODELS`.
+The simulator itself (modified nodal analysis with Newton-Raphson, BDF2 time steps and an AC sweep) is in the *Simulation engine* section and uses only the Python standard library.
+
 Rebuild the `.exe` afterwards if you hand that out.
 
 ## Troubleshooting
 
 - **Nothing happens when I double-click the .bat**: Python isn't on the PATH. Reinstall Python and tick "Add python.exe to PATH".
+- **The exe build fails with `PermissionError: [WinError 5] Access is denied`**: OneDrive (or Dropbox) locked PyInstaller's files. `Build Windows EXE.bat` now builds in your TEMP folder to avoid this; if you still see it, delete any old `build` folder next to the script (pause OneDrive syncing first) and run it again.
 - **Everything looks tiny or huge**: use the zoom buttons or **Fit**. The app follows your Windows display scaling.
 - **I lost a custom part**: check `%APPDATA%\CircuitBuilder\my_components.cblib`, or re-import a `.cblib` / open a `.circuit` that used it.
+- **The simulation says "Short circuit"**: a battery, source or power rail has a plain wire (or an ammeter) straight across it. Click the message to find the part.
+- **A part shows "not simulated"**: it has no simulation model (see *What is simulated* above); its pins are left unconnected.
+- **"Running (slower than the chosen speed)"**: the circuit is too big to simulate at that speed on this PC. Pick a slower speed or *Auto*.

@@ -9,6 +9,8 @@ A friendly circuit / wiring-diagram editor for undergraduate students.
   * Click a pin (small circle), then click a pin on another part to wire them.
   * Make your own parts with any pins in the Component Editor.
   * See which pins are connected (the netlist) and check the circuit for shorts.
+  * Simulate the circuit: live voltages and currents, an oscilloscope and
+    frequency-response (Bode) plots.
 
 Runs on Windows (also macOS / Linux) with Python 3.8 or newer.
 Only the standard library is used (Tkinter ships with the Windows installer).
@@ -22,6 +24,8 @@ import math
 import os
 import re
 import sys
+import time
+import traceback
 import uuid
 import base64
 import hashlib
@@ -31,6 +35,7 @@ import struct
 import subprocess
 import tempfile
 import zlib
+from bisect import bisect_left
 from collections import OrderedDict
 from itertools import repeat
 from operator import add as _op_add, itemgetter
@@ -46,7 +51,7 @@ except Exception:  # Pillow not installed: pictures still work (PNG/GIF, plus JP
     _PILOps = None
 
 APP_NAME = "Circuit Builder"
-APP_VERSION = "1.1"
+APP_VERSION = "1.3"
 FILE_EXT = ".circuit"
 LIB_EXT = ".cblib"
 G = 24  # pixels per grid unit at 100 % zoom
@@ -76,6 +81,12 @@ C = {
     "hover": "#f59e0b",
     "highlight": "#fde68a",
     "ok": "#16a34a",
+    "ok_dark": "#15803d",
+    "warn": "#b45309",
+    "sim_bg": "#ecfdf3",
+    "sim_border": "#b7e4c7",
+    "meter_bg": "#0f172a",
+    "meter_fg": "#a7f3d0",
 }
 
 WIRE_COLORS = [
@@ -206,10 +217,22 @@ def sym_switch():
             L((2.8, 1), (4, 1))]
 
 
+def sym_switch_closed():
+    return [L((0, 1), (1.2, 1)), CI(1.3, 1, 0.1, "white"),
+            L((1.4, 0.97), (2.62, 0.9)), CI(2.7, 1, 0.1, "white"),
+            L((2.8, 1), (4, 1))]
+
+
 def sym_pushbutton():
     return [L((0, 1), (1.2, 1)), CI(1.3, 1, 0.1, "white"), CI(2.7, 1, 0.1, "white"),
             L((2.8, 1), (4, 1)), L((1.15, 0.6), (2.85, 0.6)), L((2, 0.6), (2, 0.15)),
             L((1.7, 0.15), (2.3, 0.15))]
+
+
+def sym_pushbutton_pressed():
+    return [L((0, 1), (1.2, 1)), CI(1.3, 1, 0.1, "white"), CI(2.7, 1, 0.1, "white"),
+            L((2.8, 1), (4, 1)), L((1.15, 0.86), (2.85, 0.86)), L((2, 0.86), (2, 0.41)),
+            L((1.7, 0.41), (2.3, 0.41))]
 
 
 def sym_lamp():
@@ -257,6 +280,12 @@ def sym_ac_source():
     return [L((1, 0), (1, 1.1)), CI(1, 2, 0.9, "white"), L((1, 2.9), (1, 4)), L(*wave)]
 
 
+def sym_square_source():
+    wave = [(0.5, 2.3), (0.75, 2.3), (0.75, 1.7), (1.25, 1.7), (1.25, 2.3), (1.5, 2.3)]
+    return [L((1, 0), (1, 1.1)), CI(1, 2, 0.9, "white"), L((1, 2.9), (1, 4)), L(*wave),
+            TX(1.5, 0.55, "+", 10, True)]
+
+
 def sym_current_source():
     return [L((1, 0), (1, 1.1)), CI(1, 2, 0.9, "white"), L((1, 2.9), (1, 4)),
             L((1, 2.55), (1, 1.65)), _head((1, 1.4), (1, 2.0), 0.36)]
@@ -271,9 +300,18 @@ def sym_vcc():
     return [L((1, 2), (1, 1)), L((0.35, 1), (1.65, 1), w=1.6)]
 
 
+def sym_probe():
+    return [L((1, 2), (1, 1.25)), CI(1, 0.8, 0.45, "white"), TX(1, 0.8, "V", 9, True)]
+
+
 def sym_diode():
     return [L((0, 1), (1.5, 1)), PG((1.5, 0.5), (1.5, 1.5), (2.4, 1), fill="stroke"),
             L((2.4, 0.5), (2.4, 1.5), w=1.3), L((2.4, 1), (4, 1))]
+
+
+def sym_zener():
+    return [L((0, 1), (1.5, 1)), PG((1.5, 0.5), (1.5, 1.5), (2.4, 1), fill="stroke"),
+            L((2.15, 0.36), (2.4, 0.5), (2.4, 1.5), (2.65, 1.64), w=1.3), L((2.4, 1), (4, 1))]
 
 
 def sym_led():
@@ -373,11 +411,15 @@ SYMBOLS = {
     "fuse": sym_fuse, "switch": sym_switch, "pushbutton": sym_pushbutton, "lamp": sym_lamp,
     "motor": sym_motor, "buzzer": sym_buzzer, "voltmeter": sym_voltmeter, "ammeter": sym_ammeter,
     "battery": sym_battery, "dc_source": sym_dc_source, "ac_source": sym_ac_source,
+    "square_source": sym_square_source, "probe": sym_probe,
     "current_source": sym_current_source, "ground": sym_ground, "vcc": sym_vcc,
-    "diode": sym_diode, "led": sym_led, "npn": sym_npn, "pnp": sym_pnp, "nmos": sym_nmos,
-    "opamp": sym_opamp, "and": sym_and, "nand": sym_nand, "or": sym_or, "nor": sym_nor,
-    "xor": sym_xor, "not": sym_not,
+    "diode": sym_diode, "zener": sym_zener, "led": sym_led, "npn": sym_npn, "pnp": sym_pnp,
+    "nmos": sym_nmos, "opamp": sym_opamp, "and": sym_and, "nand": sym_nand, "or": sym_or,
+    "nor": sym_nor, "xor": sym_xor, "not": sym_not,
 }
+
+# Drawing used while a switch is closed / a push button is held down
+ALT_SYMBOLS = {"switch": sym_switch_closed, "pushbutton": sym_pushbutton_pressed}
 
 # --------------------------------------------------------------------------
 # Built-in component library
@@ -398,10 +440,12 @@ def SY(id_, name, cat, prefix, value, desc, symbol=None, pins=None, pivot=(2, 1)
     return d
 
 
-def BX(id_, name, cat, prefix, value, desc, w, h, pins, color="#e5e7eb"):
-    return {"id": id_, "name": name, "category": cat, "prefix": prefix, "value": value,
-            "description": desc, "symbol": "box", "w": w, "h": h, "color": color,
-            "pins": [{"name": n, "side": s, "pos": p} for (n, s, p) in pins]}
+def BX(id_, name, cat, prefix, value, desc, w, h, pins, color="#e5e7eb", **kw):
+    d = {"id": id_, "name": name, "category": cat, "prefix": prefix, "value": value,
+         "description": desc, "symbol": "box", "w": w, "h": h, "color": color,
+         "pins": [{"name": n, "side": s, "pos": p} for (n, s, p) in pins]}
+    d.update(kw)
+    return d
 
 
 GATE2 = [P("A", 0, 1, "L"), P("B", 0, 3, "L"), P("Y", 5, 2, "R")]
@@ -418,18 +462,24 @@ BUILTIN_DEFS = [
        pins=two_term("+", "−")),
     SY("inductor", "Inductor", "Passive", "L", "1 mH", "Coil that stores energy in a magnetic field."),
     SY("potentiometer", "Potentiometer", "Passive", "RV", "10 kΩ",
-       "Adjustable resistor. Pin W is the wiper (middle).",
+       "Adjustable resistor. Pin W is the wiper (middle). Set the wiper position in its properties.",
        pins=[P("1", 0, 1, "L"), P("W", 2, 0, "U"), P("2", 4, 1, "R")]),
     SY("ldr", "Photoresistor (LDR)", "Passive", "R", "",
-       "Light-dependent resistor: resistance drops in bright light."),
+       "Light-dependent resistor: resistance drops in bright light (about 1 MΩ in the dark, "
+       "1 kΩ in bright light). Set the light level in its properties."),
     SY("fuse", "Fuse", "Passive", "F", "1 A", "Opens the circuit if the current is too high."),
     # Sources & meters
     SY("battery", "Battery", "Sources & Meters", "B", "9 V",
-       "DC battery. Long plate is +.", pins=two_term("+", "−")),
+       "DC battery. Long plate is +. Has a small internal resistance.", pins=two_term("+", "−")),
     SY("dc_source", "DC Voltage Source", "Sources & Meters", "V", "5 V",
        "Ideal DC voltage source.", pins=VERT2, pivot=(1, 2)),
     SY("ac_source", "AC Voltage Source", "Sources & Meters", "V", "10 V 60 Hz",
-       "Sinusoidal AC voltage source.", pins=[P("1", 1, 0, "U"), P("2", 1, 4, "D")], pivot=(1, 2)),
+       "Sinusoidal AC voltage source. Value: peak voltage and frequency (write “rms” for an RMS "
+       "voltage, e.g. 120 V rms 60 Hz). Pin 1 is positive in the first half-cycle.",
+       pins=[P("1", 1, 0, "U"), P("2", 1, 4, "D")], pivot=(1, 2)),
+    SY("square_source", "Square Wave Source", "Sources & Meters", "V", "5 V 1 Hz",
+       "Switches between 0 V and the set voltage at the set frequency (50 % duty). "
+       "Handy as a clock or to blink something.", pins=VERT2, pivot=(1, 2)),
     SY("current_source", "Current Source", "Sources & Meters", "I", "1 mA",
        "Ideal current source. Current flows out of the + pin (arrow).", pins=VERT2, pivot=(1, 2)),
     SY("vcc", "Power Rail (VCC)", "Sources & Meters", "PWR", "+5 V",
@@ -442,19 +492,29 @@ BUILTIN_DEFS = [
        "Measures voltage. Connect in parallel (across) a part.", pins=two_term("+", "−")),
     SY("ammeter", "Ammeter", "Sources & Meters", "AM", "",
        "Measures current. Connect in series with a part.", pins=two_term("+", "−")),
+    SY("probe", "Voltage Probe", "Sources & Meters", "TP", "",
+       "Shows the voltage at this point while simulating, and adds it to the oscilloscope.",
+       pins=[P("V", 1, 2, "D")], pivot=(1, 1), label_mode="label"),
     # Switches & outputs
-    SY("switch", "Switch (SPST)", "Switches & Outputs", "SW", "", "Simple on/off switch."),
+    SY("switch", "Switch (SPST)", "Switches & Outputs", "SW", "",
+       "Simple on/off switch. Click it to flip it while simulating."),
     SY("pushbutton", "Push Button", "Switches & Outputs", "SW", "",
-       "Momentary switch: connected only while pressed."),
-    SY("lamp", "Lamp", "Switches & Outputs", "LP", "", "Incandescent light bulb."),
-    SY("motor", "DC Motor", "Switches & Outputs", "M", "", "DC motor."),
-    SY("buzzer", "Buzzer", "Switches & Outputs", "BZ", "", "Piezo buzzer (polarized).",
+       "Momentary switch: connected only while pressed. Hold the mouse on it while simulating."),
+    SY("lamp", "Lamp", "Switches & Outputs", "LP", "6 V 1 W",
+       "Incandescent light bulb. Value: rated voltage and power."),
+    SY("motor", "DC Motor", "Switches & Outputs", "M", "6 V 0.2 A",
+       "DC motor. Value: rated voltage and current."),
+    SY("buzzer", "Buzzer", "Switches & Outputs", "BZ", "5 V", "Piezo buzzer (polarized).",
        pins=two_term("+", "−")),
     # Semiconductors
     SY("diode", "Diode", "Semiconductors", "D", "1N4148",
        "Lets current flow from A (anode) to K (cathode) only.", pins=two_term("A", "K")),
+    SY("zener", "Zener Diode", "Semiconductors", "D", "5.1 V",
+       "Also conducts backwards once the reverse voltage reaches its Zener voltage (the value). "
+       "Used to hold a voltage steady.", pins=two_term("A", "K")),
     SY("led", "LED", "Semiconductors", "D", "Red",
-       "Light-emitting diode. Long leg = A (anode, +). Needs a series resistor.",
+       "Light-emitting diode. Long leg = A (anode, +). Needs a series resistor. "
+       "Value: color (Red, Green, Blue, Yellow, White …).",
        pins=two_term("A", "K")),
     SY("npn", "NPN Transistor", "Semiconductors", "Q", "2N2222",
        "Bipolar transistor. B = base, C = collector, E = emitter.",
@@ -491,7 +551,18 @@ BUILTIN_DEFS = [
         ("A2", "left", 10), ("A3", "left", 11), ("A4", "left", 12), ("A5", "left", 13)]
        + [("D%d" % i + (" RX" if i == 0 else " TX" if i == 1 else ""), "right", i + 1)
           for i in range(14)],
-       color="#cfe8ef"),
+       color="#cfe8ef", microcontroller=True),
+    BX("rpi_pico", "Raspberry Pi Pico", "ICs & Boards", "U", "RP2040",
+       "RP2040 microcontroller board (3.3 V logic). GP0–GP28 digital pins; GP26–GP28 are also "
+       "analog inputs ADC0–ADC2. Pins are in the board's physical order (pin 1 top-left).",
+       9, 21,
+       [(n, "left", i + 1) for i, n in enumerate(
+           ["GP0", "GP1", "GND", "GP2", "GP3", "GP4", "GP5", "GND", "GP6", "GP7",
+            "GP8", "GP9", "GND", "GP10", "GP11", "GP12", "GP13", "GND", "GP14", "GP15"])]
+       + [(n, "right", i + 1) for i, n in enumerate(
+           ["VBUS", "VSYS", "GND", "3V3_EN", "3V3", "ADC_VREF", "GP28 ADC2", "AGND", "GP27 ADC1",
+            "GP26 ADC0", "RUN", "GP22", "GND", "GP21", "GP20", "GP19", "GP18", "GND", "GP17", "GP16"])],
+       color="#d1fae5", microcontroller=True),
     BX("timer555", "555 Timer", "ICs & Boards", "U", "NE555",
        "Timer IC for oscillators (astable) and one-shot pulses (monostable).",
        6, 6,
@@ -517,17 +588,30 @@ BUILTIN_DEFS = [
        [("VCC", "left", 1), ("TRIG", "left", 2), ("ECHO", "left", 3), ("GND", "left", 4)],
        color="#d1fae5"),
     BX("tmp36", "Temperature Sensor", "Modules & Sensors", "U", "TMP36",
-       "Analog temperature sensor: VOUT rises 10 mV per °C.", 5, 4,
+       "Analog temperature sensor: VOUT rises 10 mV per °C. Set the temperature in its properties.", 5, 4,
        [("+VS", "left", 1), ("VOUT", "left", 2), ("GND", "left", 3)], color="#fef3c7"),
     BX("lcd_i2c", "LCD 16×2 (I2C)", "Modules & Sensors", "U", "",
        "Character display with I2C backpack.", 6, 5,
        [("GND", "left", 1), ("VCC", "left", 2), ("SDA", "left", 3), ("SCL", "left", 4)],
        color="#d1fae5"),
     BX("relay", "Relay Module", "Modules & Sensors", "K", "5 V",
-       "Electrically controlled switch. IN controls COM–NO / COM–NC.", 6, 4,
+       "Electrically controlled switch. When IN is HIGH, COM connects to NO; otherwise COM connects to NC.", 6, 4,
        [("VCC", "left", 1), ("GND", "left", 2), ("IN", "left", 3),
         ("NO", "right", 1), ("COM", "right", 2), ("NC", "right", 3)], color="#dbeafe"),
 ]
+
+
+# Pin names that count as power or ground on a microcontroller board (case-insensitive)
+_POWER_PIN_RX = re.compile(r"^\+?(VIN|VCC|VDD|VBUS|VUSB|VSYS|V\+|5V|5V0|3V3|3\.3V|3V|12V)\d*$")
+_GROUND_PIN_RX = re.compile(r"^([ADP]?GND|VSS|GROUND|0V)\d*$")
+
+
+def is_power_pin(name):
+    return bool(_POWER_PIN_RX.match(re.sub(r"\s+", "", name or "").upper()))
+
+
+def is_ground_pin(name):
+    return bool(_GROUND_PIN_RX.match(re.sub(r"\s+", "", name or "").upper()))
 
 
 # --------------------------------------------------------------------------
@@ -543,10 +627,12 @@ class RDef:
         self.value = d.get("value", "")
         self.description = d.get("description", "")
         self.custom = bool(d.get("custom"))
+        self.microcontroller = bool(d.get("microcontroller"))
         self.symbol = d.get("symbol", "box")
         self.label_mode = d.get("label_mode", "both")
         self.color = d.get("color", "#e8eefc")
         self.box = None
+        self.alt_prims = None
         self.image = d.get("image") if valid_picture(d.get("image")) else None
         self.image_key = picture_key(self.image) if self.image else None
         self.pic_region = None
@@ -555,6 +641,8 @@ class RDef:
         else:
             fn = SYMBOLS.get(self.symbol)
             self.prims = fn() if fn else []
+            alt = ALT_SYMBOLS.get(self.symbol)
+            self.alt_prims = alt() if alt else None
             self.pins = [dict(p) for p in d.get("pins", [])]
             self.pivot = tuple(d.get("pivot", (2, 1)))
         xs, ys = [], []
@@ -717,8 +805,9 @@ def _draw_picture_body(cv, rd, comp, tp, z, fam, color, label, value, tags):
 
 
 def render_component(cv, rd, comp, T, z, fam, state="normal", connected=frozenset(),
-                     cid=None, show_pin_labels=True, show_pins=True, extra_tags=()):
-    """Draw one component on a Tk canvas.  T maps world grid units -> canvas px."""
+                     cid=None, show_pin_labels=True, show_pins=True, extra_tags=(), closed=False):
+    """Draw one component on a Tk canvas.  T maps world grid units -> canvas px.
+    closed=True draws a switch closed / a push button pressed."""
     tags = ("comp",) + (("c:" + cid,) if cid else ()) + tuple(extra_tags)
     hot = state in ("selected", "ghost")
     stroke = C["select"] if hot else C["stroke"]
@@ -745,7 +834,8 @@ def render_component(cv, rd, comp, T, z, fam, state="normal", connected=frozense
             return "white"
         return f or ""
 
-    for p in rd.prims:
+    prims = rd.alt_prims if (closed and rd.alt_prims) else rd.prims
+    for p in prims:
         t = p["t"]
         if t == "line":
             pts = [c for q in p["pts"] for c in tp(q)]
@@ -1553,6 +1643,8 @@ class ComponentEditor(tk.Toplevel):
         self.edit_id = d.get("id") if (d.get("custom") and not duplicate) else None
         self.source_name = d.get("name", "")
         self.use_for = use_for
+        # a copy of a built-in part keeps that part's simulation model (it is matched by pin names)
+        self.sim_model = d.get("sim") or (d.get("id") if (not d.get("custom") and d.get("id") in SIM_MODELS) else None)
         if image is not None:
             d["image"] = image
         if duplicate:
@@ -1579,6 +1671,7 @@ class ComponentEditor(tk.Toplevel):
         self.v_pin = tk.StringVar()
         self.v_side = tk.StringVar(value="left")
         self.v_dip = tk.IntVar(value=8)
+        self.v_mcu = tk.BooleanVar(value=bool(d.get("microcontroller")))
 
         self._build(d)
         for v in (self.v_name, self.v_prefix, self.v_value, self.v_color, self.v_auto, self.v_w, self.v_h):
@@ -1656,8 +1749,12 @@ class ComponentEditor(tk.Toplevel):
              "value": self.v_value.get().strip(),
              "description": self.t_desc.get("1.0", "end").strip(),
              "symbol": "box", "w": w, "h": h, "color": self.v_color.get(), "pins": pins}
+        if self.v_mcu.get():
+            d["microcontroller"] = True
         if self.image:
             d["image"] = self.image
+        if self.sim_model:
+            d["sim"] = self.sim_model
         return d
 
     # ---- UI ----
@@ -1801,6 +1898,13 @@ class ComponentEditor(tk.Toplevel):
         ttk.Spinbox(quick, from_=2, to=64, increment=2, width=4, textvariable=self.v_dip).grid(row=0, column=1, padx=6)
         ttk.Label(quick, text="pins", style="Card.TLabel").grid(row=0, column=2)
         ttk.Button(quick, text="Create pins", command=self._dip).grid(row=0, column=3, padx=(8, 0))
+        mcf = ttk.Frame(mid, style="Inner.TFrame")
+        mcf.grid(row=7, column=0, sticky="ew", pady=(12, 0))
+        ttk.Checkbutton(mcf, text="This is a microcontroller or dev board (Arduino, ESP32, Pico …)",
+                        variable=self.v_mcu, style="Card.TCheckbutton").grid(row=0, column=0, sticky="w")
+        ttk.Label(mcf, text="Check circuit won’t list its unused pins; it checks that power and ground are wired instead.",
+                  style="Hint.TLabel", wraplength=int(400 * self.app.ui_scale), justify="left").grid(
+            row=1, column=0, sticky="w")
 
         # right: preview
         right = ttk.Frame(outer, style="Card.TFrame", padding=14)
@@ -1813,6 +1917,10 @@ class ComponentEditor(tk.Toplevel):
         self.pv.bind("<Configure>", lambda e: self._changed())
         self.pv_info = ttk.Label(right, text="", style="Hint.TLabel", wraplength=int(260 * s))
         self.pv_info.pack(anchor="w")
+        if self.sim_model:
+            ttk.Label(right, text="Simulates like the built-in part it was copied from, as long as its "
+                                  "pin names stay the same.", style="Hint.TLabel",
+                      wraplength=int(260 * s), justify="left").pack(anchor="w", pady=(6, 0))
 
         bar = ttk.Frame(self, style="Bg.TFrame", padding=(12, 0, 12, 12))
         bar.pack(side="bottom", fill="x", before=outer)  # keep the buttons visible on small screens
@@ -2079,6 +2187,7 @@ SHORTCUTS = [
     ("Right- or middle-drag", "Move around (pan)"),
     ("Arrow keys", "Nudge selected parts"),
     ("Double-click a wire", "Add a bend you can drag"),
+    ("F5", "Start / stop the simulation"),
 ]
 
 SPICE_MAP = {
@@ -2089,6 +2198,7 @@ SPICE_MAP = {
     "ac_source": ("V", ["1", "2"], "AC"), "current_source": ("I", ["−", "+"], "DC"),
     "ammeter": ("V", ["+", "−"], "AMMETER"),
     "diode": ("D", ["A", "K"], "DMOD"), "led": ("D", ["A", "K"], "DLED"),
+    "zener": ("D", ["A", "K"], "DZEN"),
     "npn": ("Q", ["C", "B", "E"], "QNPN"), "pnp": ("Q", ["C", "B", "E"], "QPNP"),
 }
 
@@ -2131,6 +2241,24 @@ class App:
         self._lib_drag = None
         self._flash_job = None
         self._missing = {}
+        # simulation
+        self.sim = None
+        self.sim_paused = False
+        self.sim_hover = None
+        self.sim_vars = None
+        self.scope_win = None
+        self.freq_win = None
+        self.scope_traces = []
+        self.show_volts = self.settings.get("show_volts", True)
+        self._sim_job = None
+        self._sim_pb = None
+        self._sim_click = None
+        self._sim_last = 0.0
+        self._sim_ui_t = 0.0
+        self._sim_warn_sig = None
+        self._last_sample = -1.0
+        self._spin = {}
+        self._mouse = (0, 0)
 
         self._setup_fonts()
         self._setup_style()
@@ -2199,6 +2327,15 @@ class App:
                     lightcolor=C["accent"], darkcolor=C["accent"], font=self.f_bold)
         s.map("Accent.TButton", background=[("pressed", C["accent_dark"]), ("active", C["accent_dark"])],
               foreground=[("disabled", "#dfe7f7")])
+        s.configure("Sim.TButton", background=C["ok"], foreground="white", bordercolor=C["ok"],
+                    lightcolor=C["ok"], darkcolor=C["ok"], font=self.f_bold)
+        s.map("Sim.TButton", background=[("pressed", C["ok_dark"]), ("active", C["ok_dark"])])
+        s.configure("Stop.TButton", background=C["danger"], foreground="white", bordercolor=C["danger"],
+                    lightcolor=C["danger"], darkcolor=C["danger"], font=self.f_bold)
+        s.map("Stop.TButton", background=[("pressed", "#b91c1c"), ("active", "#b91c1c")])
+        s.configure("SimBar.TButton", padding=(9, 3), width=0, background="white", lightcolor="white",
+                    darkcolor="white", bordercolor=C["sim_border"])
+        s.map("SimBar.TButton", background=[("pressed", C["accent_light"]), ("active", "#f3faf6")])
         s.configure("Danger.TButton", foreground=C["danger"])
         s.configure("TEntry", fieldbackground="white", padding=4, bordercolor=C["border"],
                     lightcolor="white", darkcolor="white")
@@ -2207,6 +2344,7 @@ class App:
         s.configure("TSpinbox", fieldbackground="white", padding=3, arrowsize=int(10 * sc))
         s.configure("Card.TCheckbutton", background=C["panel"])
         s.map("Card.TCheckbutton", background=[("active", C["panel"])])
+        s.configure("Panel.Horizontal.TScale", background=C["panel"], troughcolor="#e6eaf0")
         s.configure("Treeview", background=C["panel"], fieldbackground=C["panel"], borderwidth=0,
                     rowheight=int(22 * sc), font=self.f_ui)
         s.configure("Treeview.Heading", background="#f3f5f8", font=self.f_bold, relief="flat",
@@ -2229,6 +2367,10 @@ class App:
         ex.add_command(label="LED with resistor", command=lambda: self.load_example("led"))
         ex.add_command(label="Voltage divider", command=lambda: self.load_example("divider"))
         ex.add_command(label="Arduino blink", command=lambda: self.load_example("blink"))
+        ex.add_separator()
+        ex.add_command(label="RC low-pass filter (simulate)", command=lambda: self.load_example("rc"))
+        ex.add_command(label="Transistor switch (simulate)", command=lambda: self.load_example("transistor"))
+        ex.add_command(label="555 LED blinker (simulate)", command=lambda: self.load_example("blinker"))
         fm.add_cascade(label="Open example", menu=ex)
         self.recent_menu = tk.Menu(fm, tearoff=0)
         fm.add_cascade(label="Recent files", menu=self.recent_menu)
@@ -2286,8 +2428,22 @@ class App:
         tm.add_command(label="Check circuit", command=self.check_circuit)
         m.add_cascade(label="Tools", menu=tm)
 
+        sm = tk.Menu(m, tearoff=0)
+        sm.add_command(label="Start / stop simulation", accelerator="F5", command=self.sim_toggle)
+        sm.add_command(label="Pause / resume", command=self.sim_pause)
+        sm.add_command(label="Restart from zero", command=self.sim_restart)
+        sm.add_separator()
+        sm.add_command(label="Oscilloscope…", command=self.open_scope)
+        sm.add_command(label="Frequency response (Bode plot)…", command=self.open_freq)
+        sm.add_separator()
+        self.v_volts = tk.BooleanVar(value=self.show_volts)
+        sm.add_checkbutton(label="Show voltages on wires", variable=self.v_volts, command=self._toggle_volts)
+        sm.add_command(label="What gets simulated?", command=self.show_sim_help)
+        m.add_cascade(label="Simulate", menu=sm)
+
         hm = tk.Menu(m, tearoff=0)
         hm.add_command(label="Quick start", command=self.show_help)
+        hm.add_command(label="What gets simulated?", command=self.show_sim_help)
         hm.add_command(label="About", command=self.show_about)
         m.add_cascade(label="Help", menu=hm)
 
@@ -2305,6 +2461,13 @@ class App:
         # toolbar
         tb = ttk.Frame(self.root, style="Toolbar.TFrame", padding=(8, 5))
         tb.pack(side="top", fill="x")
+        # right-hand buttons are packed first so they stay visible in a narrow window
+        nb = ttk.Button(tb, text="+ New Component", style="Accent.TButton", command=self.new_component, takefocus=False)
+        nb.pack(side="right")
+        Tooltip(nb, "Create your own part with any pins")
+        self.b_sim = ttk.Button(tb, text="▶  Simulate", style="Sim.TButton", command=self.sim_toggle, takefocus=False)
+        self.b_sim.pack(side="right", padx=(0, 8))
+        Tooltip(self.b_sim, "Run the circuit: live voltages and currents (F5)")
         self._tool(tb, "New", self.new_file, "New circuit (Ctrl+N)")
         self._tool(tb, "Open", self.open_dialog, "Open a circuit (Ctrl+O)")
         self._tool(tb, "Save", self.save, "Save (Ctrl+S)")
@@ -2335,10 +2498,9 @@ class App:
         self._sep(tb)
         self._tool(tb, "Connections", self.show_netlist, "List which pins are connected (netlist)")
         self._tool(tb, "Check circuit", self.check_circuit, "Look for shorts and unconnected parts")
-        nb = ttk.Button(tb, text="+ New Component", style="Accent.TButton", command=self.new_component, takefocus=False)
-        nb.pack(side="right")
-        Tooltip(nb, "Create your own part with any pins")
-        tk.Frame(self.root, height=1, bg=C["border"]).pack(side="top", fill="x")
+        self._tb_line = tk.Frame(self.root, height=1, bg=C["border"])
+        self._tb_line.pack(side="top", fill="x")
+        self._build_simbar()
 
         # status bar
         sb = ttk.Frame(self.root, style="Bg.TFrame", padding=(10, 3))
@@ -2500,6 +2662,7 @@ class App:
         r.bind("<Delete>", canvas(lambda e: self.delete_sel()))
         r.bind("<BackSpace>", canvas(lambda e: self.backspace()))
         r.bind("<Escape>", anywhere(lambda e: self.escape()))
+        r.bind("<F5>", anywhere(lambda e: self.sim_toggle()))
         for k in ("r", "R"):
             r.bind("<Key-%s>" % k, canvas(lambda e: self.rotate_sel(-1 if shifted(e) else 1)))
         for k in ("f", "F"):
@@ -2668,6 +2831,8 @@ class App:
     def changed(self, props=True):
         self.dirty = True
         self._nets_cache = None
+        if self.sim is not None:
+            self._sim_rebuild()
         self.update_title()
         self.request_redraw()
         if props:
@@ -2732,7 +2897,8 @@ class App:
         for cid, c in self.comps.items():
             render_component(cv, self.rdef(c), c, self.T, z, self.fam,
                              state="selected" if ("c", cid) in self.sel else "normal",
-                             connected=connected, cid=cid, show_pin_labels=z >= 0.55)
+                             connected=connected, cid=cid, show_pin_labels=z >= 0.55,
+                             closed=self.is_closed(cid, c))
         for key in hl.get("pins", []):
             if key[0] in self.comps:
                 x, y = self.T(*self.pin_world(key))
@@ -2744,8 +2910,18 @@ class App:
                 x, y = self.T(*b)
                 r = max(3.5, 4.5 * z)
                 cv.create_rectangle(x - r, y - r, x + r, y + r, fill="white", outline=C["select"], width=1.5)
+        self._sim_draw()
         self.draw_overlay()
         self.update_counts()
+
+    def is_closed(self, cid, c):
+        """Draw this switch closed / push button pressed?"""
+        sym = self.rdef(c).symbol
+        if sym == "switch":
+            return bool(c.get("closed"))
+        if sym == "pushbutton":
+            return self.sim is not None and cid in self.sim.pressed
+        return False
 
     def draw_overlay(self):
         cv = self.cv
@@ -2789,6 +2965,8 @@ class App:
             r = 7 * max(z, 0.8)
             cv.create_oval(x - r, y - r, x + r, y + r, outline=C["hover"], width=2.5, tags="overlay")
             self._pin_tip(self.hover_pin)
+        elif self.mode == "idle" and self.sim is not None and self.sim_hover in self.comps:
+            self._sim_tip(self.sim_hover)
 
     def _pin_tip(self, key):
         cv = self.cv
@@ -2799,6 +2977,10 @@ class App:
             txt += "   (net %s)" % net["name"]
         else:
             txt += "   (not connected)"
+        if self.sim is not None:
+            v = self.sim.pin_v(key)
+            if v is not None:
+                txt += "   =  " + fmt_si(v, "V")
         t = cv.create_text(x + 14, y - 14, text=txt, anchor="sw", fill="white",
                            font=(self.fam, -int(11 * self.ui_scale)), tags="overlay")
         bx = cv.bbox(t)
@@ -2819,6 +3001,9 @@ class App:
                 text = "Wiring: click another pin to finish • click empty space to add a bend • Backspace removes a bend • Esc cancels"
             elif self.mode == "place" or self.ghost:
                 text = "Click on the canvas to place the part (hold Shift to place several) • Esc cancels"
+            elif self.sim is not None:
+                text = ("Simulating: click switches, hold push buttons, hover over parts for readings • "
+                        "you can keep editing • F5 stops")
             elif self.sel:
                 text = "Drag to move • R rotate • F flip • Del delete • Ctrl+D duplicate"
             else:
@@ -2959,7 +3144,9 @@ class App:
         fit_preview(self.lib_pv, rd, self.fam, max_zoom=1.2)
         self.lib_name.configure(text=rd.name)
         npins = len(rd.pins)
-        self.lib_desc.configure(text="%s\n%d pin%s: %s" % (rd.description, npins, "" if npins == 1 else "s",
+        self.lib_desc.configure(text="%s%s\n%d pin%s: %s" % (rd.description,
+                                                             "\nMicrocontroller board" if rd.microcontroller else "",
+                                                             npins, "" if npins == 1 else "s",
                                                              ", ".join(p["name"] for p in rd.pins[:12]) + ("…" if npins > 12 else "")))
         self.b_add.state(["!disabled"])
         self.b_lib_edit.state(["!disabled"])
@@ -3110,6 +3297,7 @@ class App:
             return
         cid = self.comp_at(wx, wy)
         if cid:
+            self._sim_press(cid)
             key = ("c", cid)
             if shift or ctrl:
                 if key in self.sel:
@@ -3184,6 +3372,13 @@ class App:
 
     def on_release(self, e):
         wx, wy = self.to_world(e.x, e.y)
+        if self._sim_pb is not None:
+            if self.sim is not None:
+                self.sim.pressed.discard(self._sim_pb)
+                self.sim.bump()
+            self._sim_pb = None
+            self.request_redraw()
+        click, self._sim_click = self._sim_click, None
         if self.mode == "pan":
             self._end_pan()
         elif self.mode == "wiring" and self.wiring and self.wiring.get("dragging"):
@@ -3197,6 +3392,8 @@ class App:
             if self.drag and self.drag["moved"]:
                 self.checkpoint(self.drag["snap"])
                 self.changed()
+            elif click and self.mode == "drag" and self.sim is not None:
+                self.toggle_switch(click)
             self.mode = "idle"
             self.drag = None
         elif self.mode == "rubber" and self.drag:
@@ -3228,6 +3425,9 @@ class App:
             return
         cid = self.comp_at(wx, wy)
         if cid:
+            if self.sim is not None and self.rdef(self.comps[cid]).symbol in ("switch", "pushbutton"):
+                self.on_press(e)  # treat as another click on the switch
+                return
             self.focus_label_entry()
             return
         wid = self.wire_at(wx, wy)
@@ -3248,6 +3448,7 @@ class App:
 
     def on_motion(self, e):
         wx, wy = self.to_world(e.x, e.y)
+        self._mouse = (e.x, e.y)
         if self.mode == "wiring" and self.wiring:
             self.wiring["mouse"] = (wx, wy)
             self.draw_overlay()
@@ -3256,11 +3457,18 @@ class App:
             self.draw_overlay()
         elif self.mode == "idle":
             pin = self.pin_at(wx, wy)
-            cursor = "crosshair" if pin else ("fleur" if self.space_down else "arrow")
+            hov = None
+            if self.sim is not None and not pin:
+                hov = self.comp_at(wx, wy)
+            clicky = hov and self.rdef(self.comps[hov]).symbol in ("switch", "pushbutton")
+            cursor = "crosshair" if pin else ("hand2" if clicky else ("fleur" if self.space_down else "arrow"))
             if self.cv.cget("cursor") != cursor:
                 self.cv.configure(cursor=cursor)
             if pin != self.hover_pin:
                 self.hover_pin = pin
+                self.draw_overlay()
+            if hov or self.sim_hover:
+                self.sim_hover = hov
                 self.draw_overlay()
 
     def on_leave(self, _e):
@@ -3268,6 +3476,7 @@ class App:
             self.ghost = None
         if self.hover_pin:
             self.hover_pin = None
+        self.sim_hover = None
         self.draw_overlay()
 
     def _start_pan(self, e):
@@ -3589,6 +3798,7 @@ class App:
             rd = self.rdef(self.comps[cid])
             m.add_command(label="Edit component type…" if rd.custom else "Copy as new component type…",
                           command=self.edit_selected_def)
+            self._plot_menu_items(m, cid)
             m.add_separator()
             m.add_command(label="Delete   Del", command=self.delete_sel)
         elif wid:
@@ -3600,6 +3810,8 @@ class App:
                 cm.add_command(label=name, command=lambda c=col: self.recolor_wires(self.sel_wires(), c))
             m.add_cascade(label="Wire color", menu=cm)
             m.add_command(label="Remove bends", command=lambda: self.straighten(self.sel_wires()))
+            m.add_separator()
+            m.add_command(label="Plot this voltage (oscilloscope)", command=lambda: self.plot_net(wid))
             m.add_separator()
             m.add_command(label="Delete wire   Del", command=self.delete_sel)
         else:
@@ -3627,9 +3839,13 @@ class App:
         for w in self.props.winfo_children():
             w.destroy()
         self.prop_vars = None
+        self.sim_vars = None
         cs, ws = self.sel_comps(), self.sel_wires()
         if not cs and not ws:
-            self._props_project()
+            if self.sim is not None:
+                self._props_sim_summary()
+            else:
+                self._props_project()
         elif len(cs) == 1 and not ws:
             self._props_component(cs[0])
         elif len(ws) == 1 and not cs:
@@ -3654,7 +3870,7 @@ class App:
             ("2", "Click a pin (small circle), then click a pin on another part to connect them."),
             ("3", "While wiring, click empty space to add bends."),
             ("4", "Click a part to change its label and value here, or give it a picture."),
-            ("5", "Need a part that isn’t listed? Use  + New Component."),
+            ("5", "Press  ▶ Simulate  to see the circuit run: live voltages, currents and glowing LEDs."),
         ]
         sf = ttk.Frame(f, style="Panel.TFrame")
         sf.grid(row=3, column=0, sticky="ew")
@@ -3674,83 +3890,123 @@ class App:
         c = self.comps[cid]
         rd = self.rdef(c)
         wl = self.props_width - 30
+        simming = self.sim is not None
+        r = 0
         self.prop_title = ttk.Label(f, text=c.get("label") or rd.name, style="Title.TLabel")
-        self.prop_title.grid(row=0, column=0, columnspan=2, sticky="w")
+        self.prop_title.grid(row=r, column=0, columnspan=2, sticky="w")
+        r += 1
         ttk.Label(f, text="%s · %s%s" % (rd.name, rd.category, "  ★ custom" if rd.custom else ""),
-                  style="Muted.TLabel", wraplength=wl).grid(row=1, column=0, columnspan=2, sticky="w")
-        info = ttk.Frame(f, style="Panel.TFrame")
-        info.grid(row=2, column=0, columnspan=2, sticky="ew")
-        if rd.image:
-            iw, ih = rd.image["w"], rd.image["h"]
-            mw = min(wl, int(iw * 2 * self.ui_scale))
-            mh = min(int(120 * self.ui_scale), int(ih * 2 * self.ui_scale))
-            ph = picture_photo(rd.image, mw, mh, rd.image_key)
-            if ph is not None:
-                pl = tk.Label(info, image=ph, bg=C["panel"], bd=0, cursor="hand2")
-                pl.image = ph
-                pl.pack(anchor="w", pady=(8, 2))
-                tip = Tooltip(pl, "Click to see the picture bigger")
-                pl.bind("<Button-1>", lambda e, r=rd, t=tip: (t._leave(), self.show_picture(r)))
-        if rd.description:
-            ttk.Label(info, text=rd.description, style="Hint.TLabel", wraplength=wl, justify="left").pack(
-                anchor="w", pady=(4, 0))
-        if self.can_add_picture(c["def"]):
-            pb = ttk.Button(info, text="Change picture…" if rd.image else "Add picture…",
-                            command=lambda: self.add_picture(c["def"], use_for=cid))
-            pb.pack(anchor="w", pady=(6, 0))
-            Tooltip(pb, "Show a photo or drawing of the part inside it" if rd.custom
-                    else "Saves your own copy of this part with a picture")
-        self._head("Properties", 3)
+                  style="Muted.TLabel", wraplength=wl).grid(row=r, column=0, columnspan=2, sticky="w")
+        r += 1
+        if simming:
+            r = self._props_sim_readings(cid, c, rd, r)
+        else:
+            info = ttk.Frame(f, style="Panel.TFrame")
+            info.grid(row=r, column=0, columnspan=2, sticky="ew")
+            r += 1
+            if rd.image:
+                iw, ih = rd.image["w"], rd.image["h"]
+                mw = min(wl, int(iw * 2 * self.ui_scale))
+                mh = min(int(120 * self.ui_scale), int(ih * 2 * self.ui_scale))
+                ph = picture_photo(rd.image, mw, mh, rd.image_key)
+                if ph is not None:
+                    pl = tk.Label(info, image=ph, bg=C["panel"], bd=0, cursor="hand2")
+                    pl.image = ph
+                    pl.pack(anchor="w", pady=(8, 2))
+                    tip = Tooltip(pl, "Click to see the picture bigger")
+                    pl.bind("<Button-1>", lambda e, r_=rd, t=tip: (t._leave(), self.show_picture(r_)))
+            if rd.description:
+                ttk.Label(info, text=rd.description, style="Hint.TLabel", wraplength=wl, justify="left").pack(
+                    anchor="w", pady=(4, 0))
+            v_mcu = tk.BooleanVar(value=self.is_mcu(c))
+            mc = ttk.Checkbutton(info, text="Microcontroller / dev board", variable=v_mcu, style="Card.TCheckbutton",
+                                 command=lambda: self.set_mcu(cid, v_mcu.get()))
+            mc.pack(anchor="w", pady=(6, 0))
+            Tooltip(mc, "Check circuit won’t list unused pins on a microcontroller;\n"
+                        "it checks that its power and ground are wired instead.")
+            if self.can_add_picture(c["def"]):
+                pb = ttk.Button(info, text="Change picture…" if rd.image else "Add picture…",
+                                command=lambda: self.add_picture(c["def"], use_for=cid))
+                pb.pack(anchor="w", pady=(6, 0))
+                Tooltip(pb, "Show a photo or drawing of the part inside it" if rd.custom
+                        else "Saves your own copy of this part with a picture")
+        r = self._props_sim_controls(cid, c, rd, r)
+        self._head("Properties", r)
+        r += 1
         v_label = tk.StringVar(value=c.get("label", ""))
         v_value = tk.StringVar(value=c.get("value", ""))
-        ttk.Label(f, text="Label", style="Panel.TLabel").grid(row=4, column=0, sticky="w")
+        ttk.Label(f, text="Label", style="Panel.TLabel").grid(row=r, column=0, sticky="w")
         e1 = ttk.Entry(f, textvariable=v_label)
-        e1.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(2, 6))
-        ttk.Label(f, text="Value", style="Panel.TLabel").grid(row=6, column=0, sticky="w")
+        e1.grid(row=r + 1, column=0, columnspan=2, sticky="ew", pady=(2, 6))
+        ttk.Label(f, text="Value", style="Panel.TLabel").grid(row=r + 2, column=0, sticky="w")
         e2 = ttk.Entry(f, textvariable=v_value)
-        e2.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(2, 6))
-        ttk.Label(f, text="Notes", style="Panel.TLabel").grid(row=8, column=0, sticky="w")
-        t = tk.Text(f, height=3, width=24, wrap="word", font=self.f_ui, relief="flat", highlightthickness=1,
-                    highlightbackground=C["border"], highlightcolor=C["accent"], padx=6, pady=4)
-        t.insert("1.0", c.get("notes", ""))
-        t.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(2, 0))
+        e2.grid(row=r + 3, column=0, columnspan=2, sticky="ew", pady=(2, 6))
+        r += 4
+        t = None
+        if not simming:
+            ttk.Label(f, text="Notes", style="Panel.TLabel").grid(row=r, column=0, sticky="w")
+            t = tk.Text(f, height=3, width=24, wrap="word", font=self.f_ui, relief="flat", highlightthickness=1,
+                        highlightbackground=C["border"], highlightcolor=C["accent"], padx=6, pady=4)
+            t.insert("1.0", c.get("notes", ""))
+            t.grid(row=r + 1, column=0, columnspan=2, sticky="ew", pady=(2, 0))
+            t.bind("<FocusOut>", lambda e: self.commit_props())
+            r += 2
         for w in (e1, e2):
             w.bind("<Return>", lambda e: (self.commit_props(), self.cv.focus_set()))
             w.bind("<FocusOut>", lambda e: self.commit_props())
-        t.bind("<FocusOut>", lambda e: self.commit_props())
         self.prop_vars = {"cid": cid, "label": v_label, "value": v_value, "notes": t, "label_entry": e1}
         of = ttk.Frame(f, style="Panel.TFrame")
-        of.grid(row=10, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        of.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        r += 1
         ttk.Button(of, text="Rotate left", command=lambda: self.rotate_sel(-1)).pack(side="left")
         ttk.Button(of, text="Rotate right", command=lambda: self.rotate_sel(1)).pack(side="left", padx=4)
         ttk.Button(of, text="Flip", command=self.flip_sel).pack(side="left")
-        self._head("Pins (%d)" % len(rd.pins), 11)
-        tv = ttk.Treeview(f, columns=("pin", "to"), show="headings", height=min(9, max(2, len(rd.pins))), selectmode="none")
-        tv.heading("pin", text="Pin")
-        tv.heading("to", text="Connected to")
-        tv.column("pin", width=int(60 * self.ui_scale), stretch=False)
-        tv.column("to", width=int(170 * self.ui_scale))
-        conn = {}
-        for w in self.wires.values():
-            a, b = tuple(w["a"]), tuple(w["b"])
-            if a[0] == cid:
-                conn.setdefault(a[1], []).append(self.pin_name(b))
-            if b[0] == cid:
-                conn.setdefault(b[1], []).append(self.pin_name(a))
-        for i, p in enumerate(rd.pins):
-            tv.insert("", "end", values=(p["name"], ", ".join(conn.get(i, [])) or "—"))
-        tv.grid(row=12, column=0, sticky="ew")
+        self._head("Pins (%d)" % len(rd.pins), r)
+        r += 1
+        rows = min(9, max(2, len(rd.pins)))
+        if simming:
+            tv = ttk.Treeview(f, columns=("pin", "v", "i"), show="headings", height=rows, selectmode="browse")
+            tv.heading("pin", text="Pin")
+            tv.heading("v", text="Voltage")
+            tv.heading("i", text="Current in")
+            tv.column("pin", width=int(56 * self.ui_scale), stretch=False)
+            tv.column("v", width=int(84 * self.ui_scale), anchor="e")
+            tv.column("i", width=int(84 * self.ui_scale), anchor="e")
+            for i, p in enumerate(rd.pins):
+                tv.insert("", "end", iid=str(i), values=(p["name"], "", ""))
+            tv.bind("<Double-1>", lambda e, tv=tv: self._plot_pin_row(cid, tv))
+            if self.sim_vars is not None:
+                self.sim_vars["tree"] = tv
+            self._sim_update_props()
+        else:
+            tv = ttk.Treeview(f, columns=("pin", "to"), show="headings", height=rows, selectmode="none")
+            tv.heading("pin", text="Pin")
+            tv.heading("to", text="Connected to")
+            tv.column("pin", width=int(60 * self.ui_scale), stretch=False)
+            tv.column("to", width=int(170 * self.ui_scale))
+            conn = {}
+            for w in self.wires.values():
+                a, b = tuple(w["a"]), tuple(w["b"])
+                if a[0] == cid:
+                    conn.setdefault(a[1], []).append(self.pin_name(b))
+                if b[0] == cid:
+                    conn.setdefault(b[1], []).append(self.pin_name(a))
+            for i, p in enumerate(rd.pins):
+                tv.insert("", "end", values=(p["name"], ", ".join(conn.get(i, [])) or "—"))
+        tv.grid(row=r, column=0, sticky="ew")
         if len(rd.pins) > 9:
             sb = ttk.Scrollbar(f, orient="vertical", command=tv.yview)
-            sb.grid(row=12, column=1, sticky="ns")
+            sb.grid(row=r, column=1, sticky="ns")
             tv.configure(yscrollcommand=sb.set)
+        r += 1
         bf = ttk.Frame(f, style="Panel.TFrame")
-        bf.grid(row=13, column=0, columnspan=2, sticky="ew", pady=(14, 0))
+        bf.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(14, 0))
+        r += 1
         ttk.Button(bf, text="Duplicate", command=self.duplicate).pack(side="left")
         ttk.Button(bf, text="Delete", style="Danger.TButton", command=self.delete_sel).pack(side="left", padx=4)
         if rd.custom:
             ttk.Button(f, text="Edit component type…", command=self.edit_selected_def).grid(
-                row=14, column=0, columnspan=2, sticky="w", pady=(8, 0))
+                row=r, column=0, columnspan=2, sticky="w", pady=(8, 0))
         f.columnconfigure(0, weight=1)
 
     def show_picture(self, rd):
@@ -3794,7 +4050,7 @@ class App:
         try:
             label = pv["label"].get().strip()
             value = pv["value"].get().strip()
-            notes = pv["notes"].get("1.0", "end").strip()
+            notes = pv["notes"].get("1.0", "end").strip() if pv["notes"] is not None else c.get("notes", "")
         except tk.TclError:
             return
         if (label, value, notes) != (c.get("label", ""), c.get("value", ""), c.get("notes", "")):
@@ -3812,7 +4068,12 @@ class App:
         a, b = tuple(w["a"]), tuple(w["b"])
         ttk.Label(f, text="Wire", style="Title.TLabel").grid(row=0, column=0, sticky="w")
         net = self.pin_net_map().get(a)
-        ttk.Label(f, text="On net %s" % net["name"] if net else "", style="Muted.TLabel").grid(row=1, column=0, sticky="w")
+        txt = "On net %s" % net["name"] if net else ""
+        if self.sim is not None and net:
+            v = self.sim.pin_v(a)
+            if v is not None:
+                txt += "  ·  %s" % fmt_si(v, "V")
+        ttk.Label(f, text=txt, style="Muted.TLabel").grid(row=1, column=0, sticky="w")
         self._head("Connects", 2)
         cf = ttk.Frame(f, style="Panel.TFrame")
         cf.grid(row=3, column=0, sticky="ew")
@@ -3833,6 +4094,8 @@ class App:
         if not nb:
             rb.state(["disabled"])
         ttk.Button(bf, text="Delete wire", style="Danger.TButton", command=lambda: self.delete_wire(wid)).pack(side="left", padx=4)
+        ttk.Button(f, text="Plot this voltage", command=lambda: self.plot_net(wid)).grid(
+            row=9, column=0, sticky="w", pady=(10, 0))
         f.columnconfigure(0, weight=1)
 
     def _color_swatches(self, row, wids, current):
@@ -3968,6 +4231,8 @@ class App:
         if self.lib_tree.exists("def:" + d["id"]):
             self.lib_tree.selection_set("def:" + d["id"])
             self.lib_tree.see("def:" + d["id"])
+        if self.sim is not None:
+            self._sim_rebuild()
         self.request_redraw()
         self.refresh_props()
         msg = "Saved “%s” to your library." % d["name"]
@@ -4066,6 +4331,10 @@ class App:
     def load_data(self, data):
         if data.get("format") != "circuit-builder":
             raise ValueError("This is not a Circuit Builder file.")
+        self.sim_stop()
+        self.scope_traces = []
+        if self.scope_win is not None:
+            self.scope_win.build_legend()
         added = 0
         for d in data.get("definitions", []):
             if d.get("id") and not self.library.get(d["id"]):
@@ -4100,12 +4369,16 @@ class App:
         self.commit_props()
         if not self.confirm_discard():
             return
+        self.sim_stop()
         self.cancel_mode()
         self.comps, self.wires, self.sel = {}, {}, set()
         self.undo_stack.clear()
         self.redo_stack.clear()
         self.path = None
         self.highlight = None
+        self.scope_traces = []
+        if self.scope_win is not None:
+            self.scope_win.build_legend()
         self.changed()
         self.dirty = False
         self.update_title()
@@ -4188,6 +4461,7 @@ class App:
     def on_close(self):
         self.commit_props()
         if self.confirm_discard():
+            self.sim_stop()
             self.root.destroy()
 
     def load_example(self, name):
@@ -4202,6 +4476,11 @@ class App:
         self.dirty = False
         self.update_title()
         self.root.after(30, self.fit)
+        tips = {"rc": "Press ▶ Simulate, then open the Oscilloscope or Simulate › Frequency response.",
+                "transistor": "Press ▶ Simulate, then hold the push button down to switch the LED on.",
+                "blinker": "Press ▶ Simulate to watch the LED blink about once a second."}
+        if name in tips:
+            self.flash(tips[name], 8000)
 
     # ------------------------------------------------------------ netlist & checks
     def show_netlist(self):
@@ -4293,6 +4572,7 @@ class App:
                 lines.append("%s %s %s" % (name, " ".join(nodes), kind))
                 models.add(kind)
         model_lines = {"DMOD": ".model DMOD D", "DLED": ".model DLED D(IS=1e-22 N=1.5 RS=2)",
+                       "DZEN": ".model DZEN D(BV=5.1)",
                        "QNPN": ".model QNPN NPN(BF=100)", "QPNP": ".model QPNP PNP(BF=100)"}
         for m in sorted(models):
             lines.append(model_lines.get(m, "* model %s" % m))
@@ -4300,6 +4580,25 @@ class App:
             lines.insert(1, "* WARNING: no Ground symbol — SPICE needs a node named 0.")
         lines += [".op", ".end"]
         return "\n".join(lines) + "\n"
+
+    def is_mcu(self, c):
+        """Is this placed part treated as a microcontroller?  A part can override its type's setting."""
+        v = c.get("mcu")
+        return self.rdef(c).microcontroller if v is None else bool(v)
+
+    def set_mcu(self, cid, on):
+        self.commit_props()
+        c = self.comps.get(cid)
+        if c is None or self.is_mcu(c) == bool(on):
+            return
+        self.checkpoint()
+        if bool(on) == self.rdef(c).microcontroller:
+            c.pop("mcu", None)  # same as the part type: no override needed
+        else:
+            c["mcu"] = bool(on)
+        self.changed(props=False)
+        self.flash("%s is %s treated as a microcontroller." % (c.get("label") or self.rdef(c).name,
+                                                               "now" if on else "no longer"))
 
     def check_circuit(self):
         self.commit_props()
@@ -4313,23 +4612,37 @@ class App:
             lbl = c.get("label") or rd.name
             if c["def"] == "ground":
                 has_gnd = True
-            if c["def"] in ("battery", "dc_source", "ac_source", "current_source", "vcc"):
+            if c["def"] in ("battery", "dc_source", "ac_source", "square_source", "current_source", "vcc"):
                 has_source = True
             keys = [(cid, i) for i in range(len(rd.pins))]
             nets = [pm.get(k)["name"] if pm.get(k) else None for k in keys]
             n_conn = sum(1 for k in keys if k in wired)
-            if c["def"] in ("battery", "dc_source", "ac_source") and nets[0] and nets[0] == nets[1]:
+            if c["def"] in ("battery", "dc_source", "ac_source", "square_source") and nets[0] and nets[0] == nets[1]:
                 issues.append(("Error", cid, "Short circuit: the two terminals of %s are wired directly together." % lbl))
                 continue
             if len(keys) >= 2 and n_conn == len(keys) and len(set(nets)) == 1 and c["def"] not in ("ground", "vcc"):
                 issues.append(("Warning", cid, "%s is shorted: all its pins are on the same net (%s)." % (lbl, nets[0])))
             if n_conn == 0:
                 issues.append(("Warning", cid, "%s is not connected to anything." % lbl))
+            elif self.is_mcu(c):
+                # Microcontroller: unused I/O pins are normal. Check power and ground instead.
+                gnd = [i for i, p in enumerate(rd.pins) if is_ground_pin(p["name"])]
+                pwr = [i for i, p in enumerate(rd.pins) if is_power_pin(p["name"])]
+                if gnd and not any((cid, i) in wired for i in gnd):
+                    issues.append(("Warning", cid, "%s: no GND pin is connected. The board’s ground must be shared "
+                                                   "with the parts it controls." % lbl))
+                if pwr and not any((cid, i) in wired for i in pwr):
+                    names = ", ".join(dict.fromkeys(rd.pins[i]["name"] for i in pwr))
+                    issues.append(("Info", cid, "%s: no power pin (%s) is wired. That’s fine if the board is "
+                                                "powered over USB." % (lbl, names)))
             elif n_conn < len(keys):
                 free = [rd.pins[i]["name"] for i in range(len(keys)) if (cid, i) not in wired]
                 sev = "Warning" if len(keys) <= 3 and c["def"] not in ("potentiometer",) else "Info"
                 txt = ", ".join(free[:10]) + (" …" if len(free) > 10 else "")
-                issues.append((sev, cid, "%s: pin%s %s not connected." % (lbl, "s" if len(free) > 1 else "", txt)))
+                msg = "%s: pin%s %s not connected." % (lbl, "s" if len(free) > 1 else "", txt)
+                if len(keys) >= 8 and len(free) >= 4:
+                    msg += " If this is a microcontroller, tick “Microcontroller” in its properties."
+                issues.append((sev, cid, msg))
         if has_source and not has_gnd:
             issues.append(("Info", None, "No Ground symbol. Add one to mark the 0 V reference (needed for SPICE)."))
         CheckDialog(self, issues)
@@ -4357,7 +4670,7 @@ class CheckDialog(tk.Toplevel):
             head, col = "%d warning%s, %d note%s" % (warns, "" if warns == 1 else "s", len(issues) - warns,
                                                      "" if len(issues) - warns == 1 else "s"), "#b45309"
         tk.Label(top, text=head, bg=C["bg"], fg=col, font=(app.fam, 12, "bold")).pack(anchor="w")
-        ttk.Label(top, text="Double-click a line to select that part. Unused pins on boards and chips are usually fine.",
+        ttk.Label(top, text="Double-click a line to select that part. Unused pins on microcontrollers are not listed.",
                   style="Status.TLabel").pack(anchor="w")
         mid = ttk.Frame(self, style="Bg.TFrame", padding=(14, 0))
         mid.pack(fill="both", expand=True)
@@ -4384,7 +4697,7 @@ class CheckDialog(tk.Toplevel):
             tv.bind("<Double-1>", lambda e: self._go(tv))
         else:
             msg = ("Every part is connected and no power source is shorted." if app.comps
-                   else "The circuit is empty \u2014 add some parts first.")
+                   else "The circuit is empty — add some parts first.")
             ttk.Label(mid, text=msg, style="Status.TLabel").grid(row=0, column=0, sticky="nw", pady=10)
         bar = ttk.Frame(self, style="Bg.TFrame", padding=12)
         bar.pack(fill="x")
@@ -4414,6 +4727,1896 @@ def spice_value(v):
     return num + suf
 
 
+# ==========================================================================
+# Simulation engine
+# ==========================================================================
+# The circuit is solved with modified nodal analysis (MNA): one unknown per
+# net voltage plus one per voltage-source-like branch current.  Non-linear
+# parts (diodes, transistors, op-amps, logic gates, the regulator) are handled
+# with Newton-Raphson iteration; capacitors and inductors are integrated with
+# BDF2 (Gear) steps, and backward-Euler right after anything switches.  The
+# same matrices give the small-signal AC response used for Bode plots.
+# Everything is plain Python, so it is fast enough for classroom-sized circuits.
+
+_SI = {"p": 1e-12, "n": 1e-9, "u": 1e-6, "µ": 1e-6, "μ": 1e-6, "m": 1e-3,
+       "k": 1e3, "K": 1e3, "M": 1e6, "G": 1e9}
+_UNITS = {"v": "v", "vrms": "v", "vpp": "v", "vp": "v", "a": "a", "hz": "hz", "f": "f", "h": "h",
+          "w": "w", "ohm": "ohm", "ohms": "ohm", "ω": "ohm", "r": "ohm", "s": "s", "%": "%",
+          "°c": "c", "c": "c"}
+_UNIT_SYM = {"ohm": "Ω", "f": "F", "h": "H", "v": "V", "a": "A", "hz": "Hz", "w": "W"}
+_QTY_RX = re.compile(r"([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)\s*([a-zA-ZΩΩµμ°%]*)")
+
+
+def parse_quantities(text):
+    """'10 V 60 Hz' -> [(10.0, 'v'), (60.0, 'hz')];  '4.7 kΩ' -> [(4700.0, 'ohm')]."""
+    s = (text or "").replace("−", "-").replace(",", ".")
+    out = []
+    for m in _QTY_RX.finditer(s):
+        try:
+            num = float(m.group(1))
+        except ValueError:
+            continue
+        letters = m.group(2)
+        mult = 1.0
+        if letters.lower().startswith("meg"):
+            mult, letters = 1e6, letters[3:]
+        elif letters and letters[0] in _SI and (len(letters) == 1 or letters[1:].lower() in _UNITS):
+            mult, letters = _SI[letters[0]], letters[1:]
+        unit = _UNITS.get(letters.lower(), letters.lower())
+        out.append((num * mult, unit))
+    return out
+
+
+def qty(text, unit, allow_bare=True):
+    """First number in text with this unit (or with no unit, if allow_bare)."""
+    qs = parse_quantities(text)
+    for v, u in qs:
+        if u == unit:
+            return v
+    if allow_bare:
+        for v, u in qs:
+            if u == "":
+                return v
+    return None
+
+
+_FMT_PFX = ((1e9, "G"), (1e6, "M"), (1e3, "k"), (1.0, ""), (1e-3, "m"), (1e-6, "µ"), (1e-9, "n"), (1e-12, "p"))
+
+
+def fmt_si(v, unit="", tiny=1e-12):
+    """4.7e-3, 'A' -> '4.70 mA'."""
+    if v is None or v != v:
+        return "—"
+    if abs(v) < tiny:
+        return "0 " + unit
+    a = abs(v)
+    p, s = _FMT_PFX[-1]
+    for p, s in _FMT_PFX:
+        if a >= p * 0.9995:
+            break
+    val = v / p
+    av = abs(val)
+    txt = "%.0f" % val if av >= 99.95 else "%.1f" % val if av >= 9.995 else "%.2f" % val
+    return ("%s %s%s" % (txt, s, unit)).replace("-", "−")
+
+
+def _mix(c1, c2, t):
+    """Blend two #rrggbb colors (t = 0 -> c1, 1 -> c2)."""
+    t = max(0.0, min(1.0, t))
+    a = [int(c1[i:i + 2], 16) for i in (1, 3, 5)]
+    b = [int(c2[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#%02x%02x%02x" % tuple(int(round(x + (y - x) * t)) for x, y in zip(a, b))
+
+
+class SimError(Exception):
+    pass
+
+
+class NoConvergence(Exception):
+    pass
+
+
+class _Singular(Exception):
+    def __init__(self, col):
+        Exception.__init__(self, col)
+        self.col = col
+
+
+class _MissingPin(Exception):
+    pass
+
+
+def lu_factor(A, tol=1e-13):
+    """Gaussian elimination with partial pivoting (works for real or complex matrices)."""
+    n = len(A)
+    M = [list(r) for r in A]
+    perm = list(range(n))
+    for k in range(n):
+        p, big = k, abs(M[k][k])
+        for i in range(k + 1, n):
+            a = abs(M[i][k])
+            if a > big:
+                p, big = i, a
+        if big < tol:
+            raise _Singular(k)
+        if p != k:
+            M[k], M[p] = M[p], M[k]
+            perm[k], perm[p] = perm[p], perm[k]
+        rk = M[k]
+        piv = rk[k]
+        tail = rk[k + 1:]
+        for i in range(k + 1, n):
+            ri = M[i]
+            f = ri[k]
+            if f:
+                f = f / piv
+                ri[k] = f
+                ri[k + 1:] = [a - f * b for a, b in zip(ri[k + 1:], tail)]
+    return M, perm
+
+
+def lu_solve(LU, b):
+    M, perm = LU
+    n = len(M)
+    y = [b[p] for p in perm]
+    for i in range(1, n):
+        ri = M[i]
+        y[i] -= sum(a * c for a, c in zip(ri[:i], y[:i]))
+    for i in range(n - 1, -1, -1):
+        ri = M[i]
+        s = y[i] - sum(a * c for a, c in zip(ri[i + 1:], y[i + 1:]))
+        y[i] = s / ri[i]
+    return y
+
+
+VT = 0.025852    # thermal voltage at 27 °C
+GMIN = 1e-12     # tiny conductance to ground on every node (keeps floating nodes solvable)
+_E60 = math.exp(60.0)
+
+
+def _exp(x):
+    """exp(x) that grows linearly past 60 (no overflow while Newton is still searching)."""
+    if x > 60.0:
+        return _E60 * (1.0 + x - 60.0), _E60
+    e = math.exp(x) if x > -700 else 0.0
+    return e, e
+
+
+def pnjlim(vnew, vold, vt, vcrit):
+    """SPICE's junction-voltage limiter: stops Newton jumping far up an exponential."""
+    if vnew > vcrit and abs(vnew - vold) > 2 * vt:
+        if vold > 0:
+            arg = 1 + (vnew - vold) / vt
+            vnew = vold + vt * math.log(arg) if arg > 0 else vcrit
+        else:
+            vnew = vt * math.log(vnew / vt)
+        return vnew, True
+    return vnew, False
+
+
+class Stamp:
+    """Matrix A and right-hand side b being built, plus the solve settings."""
+
+    def __init__(self, N):
+        self.A = [[0.0] * N for _ in range(N)]
+        self.b = [0.0] * N
+        self.dc = True        # DC: capacitors open, inductors shorted
+        self.h = 1e-3         # time step
+        self.method = "be"    # "be" (backward Euler) or "bdf2"
+        self.t = 0.0          # time at the end of this step
+        self.scale = 1.0      # source stepping
+        self.open = None      # an inductor to leave open (time-constant estimate)
+        self.limited = False  # a non-linear part limited its voltage this iteration
+
+    def g(self, a, b, g):
+        """Conductance g between nodes a and b (0 = ground)."""
+        A = self.A
+        if a:
+            A[a - 1][a - 1] += g
+        if b:
+            A[b - 1][b - 1] += g
+            if a:
+                A[a - 1][b - 1] -= g
+                A[b - 1][a - 1] -= g
+
+    def cur(self, a, b, i):
+        """Current i flowing from node a, through the part, to node b."""
+        if a:
+            self.b[a - 1] -= i
+        if b:
+            self.b[b - 1] += i
+
+    def branch(self, k, p, n, r=0.0):
+        """Matrix part of a voltage source in row k:  V(p) - V(n) - r*I = b[k]."""
+        A = self.A
+        if p:
+            A[p - 1][k] += 1.0
+            A[k][p - 1] += 1.0
+        if n:
+            A[n - 1][k] -= 1.0
+            A[k][n - 1] -= 1.0
+        if r:
+            A[k][k] -= r
+
+    def nl(self, nodes, I, J, V):
+        """Linearised non-linear part.  I[t] = current into the part at terminal t,
+        J[t][s] = dI[t]/dV[s], V = terminal voltages the values were computed at."""
+        A, b = self.A, self.b
+        for t, nt in enumerate(nodes):
+            if not nt:
+                continue
+            row = A[nt - 1]
+            rhs = I[t]
+            Jt = J[t]
+            for s, ns in enumerate(nodes):
+                d = Jt[s]
+                if d:
+                    rhs -= d * V[s]
+                    if ns:
+                        row[ns - 1] += d
+            b[nt - 1] -= rhs
+
+
+# ---------------------------------------------------------------- devices
+class Dev:
+    nonlinear = False
+    reactive = False
+    timevar = False
+    nbr = 0           # extra branch-current unknowns
+
+    def __init__(self, sim, comp, nodes):
+        self.sim = sim
+        self.comp = comp
+        self.cid = comp["id"]
+        self.n = list(nodes)
+        self.pidx = list(range(len(nodes)))
+        self.label = comp.get("label") or "?"
+        self.br = None
+
+    def V(self, x, i):
+        n = self.n[i]
+        return x[n - 1] if n else 0.0
+
+    def vd(self, x):
+        return self.V(x, 0) - self.V(x, 1)
+
+    # solver hooks
+    def stamp_lin(self, S):
+        pass
+
+    def rhs(self, S):
+        pass
+
+    def stamp_nl(self, S, x):
+        pass
+
+    def begin(self, x):
+        pass
+
+    def accept(self, S, x):
+        pass
+
+    def discrete(self, x):
+        return False
+
+    def ac(self, A, w):
+        pass
+
+    def periods(self):
+        return []
+
+    def export(self):
+        return None
+
+    def restore(self, st):
+        pass
+
+    # read-outs
+    def currents(self, x):
+        return [0.0] * len(self.n)
+
+    def info(self, x):
+        out = []
+        if len(self.n) == 2:
+            v = self.vd(x)
+            i = self.currents(x)[0]
+            out += [("Voltage across", fmt_si(v, "V")), ("Current", fmt_si(i, "A")),
+                    ("Power", fmt_si(v * i, "W"))]
+        return out + self.extra(x)
+
+    def extra(self, x):
+        return []
+
+    def view(self, x):
+        return None
+
+    def warn(self, x):
+        return []
+
+
+def _ac_g(A, a, b, y):
+    if a:
+        A[a - 1][a - 1] += y
+    if b:
+        A[b - 1][b - 1] += y
+        if a:
+            A[a - 1][b - 1] -= y
+            A[b - 1][a - 1] -= y
+
+
+class Resistor(Dev):
+    def __init__(self, sim, comp, nodes, R, kind="resistor", rated=None):
+        Dev.__init__(self, sim, comp, nodes)
+        self.R = max(float(R), 1e-6)
+        self.kind = kind
+        self.rated = rated or (0.0, 0.0)
+
+    def res(self):
+        return self.R
+
+    def stamp_lin(self, S):
+        S.g(self.n[0], self.n[1], 1.0 / self.res())
+
+    def currents(self, x):
+        i = self.vd(x) / self.res()
+        return [i, -i]
+
+    def info(self, x):
+        if self.kind == "voltmeter":
+            return [("Reading", fmt_si(self.vd(x), "V"))]
+        return Dev.info(self, x)
+
+    def extra(self, x):
+        v = self.vd(x)
+        rv, rp = self.rated
+        if self.kind == "lamp" and rp:
+            return [("Brightness", "%d %%" % min(999, round(100 * v * v / self.R / rp)))]
+        if self.kind == "motor" and rv:
+            return [("Speed", "%d %% of full speed" % round(100 * v / rv))]
+        if self.kind == "buzzer":
+            return [("Sound", "On" if rv and v > 0.3 * rv else "Off")]
+        return []
+
+    def view(self, x):
+        v = self.vd(x)
+        rv, rp = self.rated
+        if self.kind == "lamp" and rp:
+            return {"glow": ("#fbbf24", min(1.0, v * v / self.R / rp))}
+        if self.kind == "motor" and rv:
+            return {"spin": v / rv}
+        if self.kind == "buzzer" and rv and v > 0.3 * rv:
+            return {"sound": True}
+        if self.kind == "voltmeter":
+            return {"reading": fmt_si(v, "V")}
+        return None
+
+    def warn(self, x):
+        v = self.vd(x)
+        p = v * v / self.res()
+        rv, rp = self.rated
+        if self.kind == "resistor" and p > 0.25:
+            return [("Warning", "%s turns %s into heat. An ordinary ¼-watt resistor would overheat; "
+                                "use a bigger resistor (higher wattage or more ohms)." % (self.label, fmt_si(p, "W")))]
+        if self.kind == "lamp" and rp and p > 1.5 * rp:
+            return [("Warning", "%s gets %s but is rated %s, so a real bulb would burn out."
+                     % (self.label, fmt_si(p, "W"), fmt_si(rp, "W")))]
+        if self.kind == "motor" and rv and abs(v) > 1.5 * rv:
+            return [("Warning", "%s has %s across it but is rated %s." % (self.label, fmt_si(abs(v), "V"), fmt_si(rv, "V")))]
+        if self.kind == "buzzer" and v < -0.5:
+            return [("Warning", "%s is connected backwards: a buzzer only sounds with + at the higher voltage." % self.label)]
+        return []
+
+
+class LDR(Resistor):
+    def res(self):
+        light = max(0.0, min(100.0, float(self.comp.get("light", 50)))) / 100.0
+        return 1e6 * (1e3 / 1e6) ** light   # 1 MΩ dark ... 1 kΩ bright
+
+    def extra(self, x):
+        return [("Light level", "%d %%" % round(float(self.comp.get("light", 50)))),
+                ("Resistance", fmt_si(self.res(), "Ω"))]
+
+
+class Switch(Dev):
+    def __init__(self, sim, comp, nodes, push=False):
+        Dev.__init__(self, sim, comp, nodes)
+        self.push = push
+
+    def closed(self):
+        return (self.cid in self.sim.pressed) if self.push else bool(self.comp.get("closed"))
+
+    def g_(self):
+        return 100.0 if self.closed() else 1e-10
+
+    def stamp_lin(self, S):
+        S.g(self.n[0], self.n[1], self.g_())
+
+    def currents(self, x):
+        i = self.vd(x) * self.g_()
+        return [i, -i]
+
+    def extra(self, x):
+        return [("State", ("Pressed (closed)" if self.closed() else "Released (open)") if self.push
+                 else ("Closed (on)" if self.closed() else "Open (off)"))]
+
+
+class Fuse(Dev):
+    def __init__(self, sim, comp, nodes, rating):
+        Dev.__init__(self, sim, comp, nodes)
+        self.rating = rating
+        self.blown = False
+
+    def g_(self):
+        return 1e-10 if self.blown else 20.0
+
+    def stamp_lin(self, S):
+        S.g(self.n[0], self.n[1], self.g_())
+
+    def currents(self, x):
+        i = self.vd(x) * self.g_()
+        return [i, -i]
+
+    def discrete(self, x):
+        if not self.blown and abs(self.vd(x) * self.g_()) > self.rating:
+            self.blown = True
+            return True
+        return False
+
+    def export(self):
+        return {"blown": self.blown}
+
+    def restore(self, st):
+        self.blown = bool(st.get("blown"))
+
+    def extra(self, x):
+        return [("State", "BLOWN" if self.blown else "OK (rated %s)" % fmt_si(self.rating, "A"))]
+
+    def view(self, x):
+        return {"cross": C["danger"]} if self.blown else None
+
+    def warn(self, x):
+        if self.blown:
+            return [("Warning", "%s has blown: more than %s flowed through it. Fix the cause, then press "
+                                "Restart to fit a new fuse." % (self.label, fmt_si(self.rating, "A")))]
+        return []
+
+
+class Pot(Dev):
+    def __init__(self, sim, comp, nodes, R):
+        Dev.__init__(self, sim, comp, nodes)
+        self.R = max(R, 1.0)
+
+    def parts(self):
+        p = max(0.0, min(1.0, float(self.comp.get("wiper", 0.5))))
+        lo = self.R * 1e-4 + 0.01
+        return max(self.R * p, lo), max(self.R * (1 - p), lo)
+
+    def stamp_lin(self, S):
+        r1, r2 = self.parts()
+        S.g(self.n[0], self.n[1], 1.0 / r1)
+        S.g(self.n[1], self.n[2], 1.0 / r2)
+
+    def currents(self, x):
+        r1, r2 = self.parts()
+        i1 = (self.V(x, 0) - self.V(x, 1)) / r1
+        i2 = (self.V(x, 1) - self.V(x, 2)) / r2
+        return [i1, i2 - i1, -i2]
+
+    def info(self, x):
+        cs = self.currents(x)
+        return [("Wiper position", "%d %%" % round(100 * float(self.comp.get("wiper", 0.5)))),
+                ("Wiper voltage", fmt_si(self.V(x, 1), "V")),
+                ("Current (pin 1)", fmt_si(cs[0], "A"))]
+
+
+class Capacitor(Dev):
+    reactive = True
+
+    def __init__(self, sim, comp, nodes, Cval, polar=False):
+        Dev.__init__(self, sim, comp, nodes)
+        self.C = max(Cval, 1e-18)
+        self.polar = polar
+        self.v = self.v1 = self.i = 0.0
+        self._g = self._ieq = 0.0
+
+    def stamp_lin(self, S):
+        if not S.dc:
+            S.g(self.n[0], self.n[1], (1.0 if S.method == "be" else 1.5) * self.C / S.h)
+
+    def rhs(self, S):
+        if S.dc:
+            self._g = self._ieq = 0.0
+            return
+        if S.method == "be":
+            g = self.C / S.h
+            ieq = g * self.v
+        else:
+            g = 1.5 * self.C / S.h
+            ieq = self.C / (2 * S.h) * (4 * self.v - self.v1)
+        self._g, self._ieq = g, ieq
+        S.cur(self.n[1], self.n[0], ieq)
+
+    def accept(self, S, x):
+        v = self.vd(x)
+        if S.dc:
+            self.i = 0.0
+            self.v1 = v
+        else:
+            self.i = self._g * v - self._ieq
+            self.v1 = self.v
+        self.v = v
+
+    def currents(self, x):
+        return [self.i, -self.i]
+
+    def ac(self, A, w):
+        _ac_g(A, self.n[0], self.n[1], 1j * w * self.C)
+
+    def export(self):
+        return {"v": self.v}
+
+    def restore(self, st):
+        self.v = self.v1 = float(st.get("v", 0.0))
+
+    def extra(self, x):
+        return [("Stored charge", fmt_si(self.C * self.vd(x), "C"))]
+
+    def warn(self, x):
+        if self.polar and self.vd(x) < -1.0:
+            return [("Warning", "%s is connected backwards (%s across it). An electrolytic capacitor can be "
+                                "damaged when its − pin is at the higher voltage." % (self.label, fmt_si(self.vd(x), "V")))]
+        return []
+
+
+class Inductor(Dev):
+    reactive = True
+    nbr = 1
+
+    def __init__(self, sim, comp, nodes, Lval):
+        Dev.__init__(self, sim, comp, nodes)
+        self.L = max(Lval, 1e-15)
+        self.j = self.j1 = 0.0
+
+    def stamp_lin(self, S):
+        k = self.br
+        if S.open is self:
+            S.A[k][k] += 1.0
+            return
+        r = 0.0 if S.dc else (1.0 if S.method == "be" else 1.5) * self.L / S.h
+        S.branch(k, self.n[0], self.n[1], r)
+
+    def rhs(self, S):
+        if S.dc or S.open is self:
+            return
+        if S.method == "be":
+            S.b[self.br] -= self.L / S.h * self.j
+        else:
+            S.b[self.br] -= self.L / (2 * S.h) * (4 * self.j - self.j1)
+
+    def accept(self, S, x):
+        j = x[self.br]
+        if S.dc:
+            self.j1 = j
+        else:
+            self.j1 = self.j
+        self.j = j
+
+    def currents(self, x):
+        j = x[self.br]
+        return [j, -j]
+
+    def ac(self, A, w):
+        A[self.br][self.br] -= 1j * w * self.L
+
+    def export(self):
+        return {"j": self.j}
+
+    def restore(self, st):
+        self.j = self.j1 = float(st.get("j", 0.0))
+
+
+class VSource(Dev):
+    nbr = 1
+
+    def __init__(self, sim, comp, nodes, V, wave="dc", f=0.0, R=0.0, kind="source"):
+        Dev.__init__(self, sim, comp, nodes)
+        self.V0 = V
+        self.wave = wave
+        self.f = f
+        self.R = R
+        self.kind = kind
+        self.timevar = wave != "dc"
+
+    def value(self, S):
+        if self.wave == "sine":
+            return 0.0 if S.dc else self.V0 * math.sin(2 * math.pi * self.f * S.t)
+        if self.wave == "square":
+            if S.dc:
+                return 0.0
+            return self.V0 if (self.f * S.t) % 1.0 < 0.5 else 0.0
+        return self.V0
+
+    def stamp_lin(self, S):
+        S.branch(self.br, self.n[0], self.n[1], self.R)
+
+    def rhs(self, S):
+        S.b[self.br] += S.scale * self.value(S)
+
+    def periods(self):
+        return [1.0 / self.f] if self.wave != "dc" and self.f > 0 else []
+
+    def currents(self, x):
+        j = x[self.br]
+        return [j, -j]
+
+    def info(self, x):
+        j = x[self.br]
+        v = self.vd(x)
+        if self.kind == "ammeter":
+            return [("Reading", fmt_si(j, "A"))]
+        out = [("Voltage", fmt_si(v, "V")), ("Current out of +", fmt_si(-j, "A")),
+               ("Power delivered", fmt_si(-v * j, "W"))]
+        if self.kind == "battery":
+            out.append(("Internal resistance", fmt_si(self.R, "Ω")))
+        return out
+
+    def view(self, x):
+        if self.kind == "ammeter":
+            return {"reading": fmt_si(x[self.br], "A")}
+        return None
+
+    def warn(self, x):
+        j = abs(x[self.br])
+        if self.kind == "battery" and j > 1.0:
+            return [("Warning", "%s is delivering %s. That is close to a short circuit and would drain or "
+                                "overheat a real battery." % (self.label, fmt_si(j, "A")))]
+        if self.kind in ("source", "rail") and j > 5.0:
+            return [("Warning", "%s is supplying %s. Check for a short circuit (a wire or a very small "
+                                "resistance across the supply)." % (self.label, fmt_si(j, "A")))]
+        return []
+
+
+class ISource(Dev):
+    def __init__(self, sim, comp, nodes, I):
+        Dev.__init__(self, sim, comp, nodes)
+        self.I = I
+
+    def rhs(self, S):
+        S.cur(self.n[1], self.n[0], S.scale * self.I)  # flows out of the + pin
+
+    def currents(self, x):
+        return [-self.I, self.I]
+
+    def info(self, x):
+        v = self.vd(x)
+        return [("Current out of +", fmt_si(self.I, "A")), ("Voltage across", fmt_si(v, "V")),
+                ("Power delivered", fmt_si(v * self.I, "W"))]
+
+    def warn(self, x):
+        if abs(self.vd(x)) > 1e4:
+            return [("Warning", "%s has nowhere to send its current, so its voltage shoots up. Give it a "
+                                "complete loop to push current around." % self.label)]
+        return []
+
+
+LED_COLORS = [("infrared", 1.2, "#7f1d1d"), ("ir", 1.2, "#7f1d1d"), ("red", 1.8, "#ef4444"),
+              ("orange", 1.9, "#f97316"), ("amber", 1.95, "#f59e0b"), ("yellow", 1.95, "#facc15"),
+              ("green", 2.1, "#22c55e"), ("blue", 2.9, "#3b82f6"), ("white", 2.9, "#e5e7eb"),
+              ("purple", 3.1, "#a855f7"), ("violet", 3.1, "#a855f7"), ("uv", 3.2, "#8b5cf6"),
+              ("pink", 2.9, "#ec4899")]
+
+
+class Diode(Dev):
+    nonlinear = True
+    IZT = 5e-3   # Zener current at the Zener voltage
+
+    def __init__(self, sim, comp, nodes, Is=2.52e-9, N=1.75, bv=None, led=None):
+        Dev.__init__(self, sim, comp, nodes)
+        self.Is, self.N, self.bv, self.led = Is, N, bv, led
+        self.vt = N * VT
+        self.vcrit = self.vt * math.log(self.vt / (math.sqrt(2) * Is))
+        self.vcritz = VT * math.log(VT / (math.sqrt(2) * self.IZT))
+        self.vdl = 0.0
+
+    def iv(self, v):
+        e, de = _exp(v / self.vt)
+        i = self.Is * (e - 1.0)
+        g = self.Is * de / self.vt
+        if self.bv is not None:
+            e2, de2 = _exp(-(v + self.bv) / VT)
+            i -= self.IZT * e2
+            g += self.IZT * de2 / VT
+        return i + GMIN * v, g + GMIN
+
+    def begin(self, x):
+        self.vdl = min(self.vd(x), self.vcrit)
+
+    def stamp_nl(self, S, x):
+        v = self.vd(x)
+        vold = self.vdl
+        if self.bv is not None and v < min(0.0, -self.bv + 10 * VT):
+            u, lim = pnjlim(-(v + self.bv), -(vold + self.bv), VT, self.vcritz)
+            v = -(u + self.bv)
+        else:
+            v, lim = pnjlim(v, vold, self.vt, self.vcrit)
+        self.vdl = v
+        if lim:
+            S.limited = True
+        i, g = self.iv(v)
+        a, k = self.n
+        S.g(a, k, g)
+        S.cur(a, k, i - g * v)
+
+    def currents(self, x):
+        i = self.iv(self.vd(x))[0]
+        return [i, -i]
+
+    def extra(self, x):
+        i = self.currents(x)[0]
+        if self.led:
+            return [("Brightness", "%d %%" % max(0, min(999, round(100 * i / 0.015))))]
+        if self.bv is not None and self.vd(x) < -0.5 * self.bv and i < -1e-5:
+            return [("State", "Conducting backwards (Zener)")]
+        return [("State", "Conducting" if i > 1e-5 else "Blocking")]
+
+    def view(self, x):
+        if self.led:
+            i = self.currents(x)[0]
+            if i > 5e-5:
+                return {"glow": (self.led, min(1.0, i / 0.015)),
+                        "cross": "#111827" if i > 0.05 else None}
+        return None
+
+    def warn(self, x):
+        i = self.currents(x)[0]
+        out = []
+        if self.led and i > 0.03:
+            out.append(("Warning", "%s has %s flowing through it. A real LED would burn out: add or increase "
+                                   "its series resistor to keep it near 10–20 mA." % (self.label, fmt_si(i, "A"))))
+        if self.led and self.vd(x) < -5.0:
+            out.append(("Warning", "%s has %s across it backwards. Most LEDs are damaged above about 5 V reverse."
+                        % (self.label, fmt_si(-self.vd(x), "V"))))
+        if not self.led and self.bv is None and i > 1.0:
+            out.append(("Warning", "%s is carrying %s, more than a small diode can handle." % (self.label, fmt_si(i, "A"))))
+        return out
+
+
+class BJT(Dev):
+    nonlinear = True
+
+    def __init__(self, sim, comp, nodes, pol=1, Is=1e-14, BF=150.0, BR=5.0):
+        Dev.__init__(self, sim, comp, nodes)   # nodes: C, B, E
+        self.pol, self.Is, self.BF, self.BR = pol, Is, BF, BR
+        self.vcrit = VT * math.log(VT / (math.sqrt(2) * Is))
+        self.vbe = self.vbc = 0.0
+
+    def _eval(self, vbe, vbc):
+        Is, BF, BR = self.Is, self.BF, self.BR
+        ef, d1 = _exp(vbe / VT)
+        er, d2 = _exp(vbc / VT)
+        gf, gr = Is * d1 / VT, Is * d2 / VT
+        ic = Is * (ef - er) - Is / BR * (er - 1.0) - GMIN * vbc
+        ib = Is / BF * (ef - 1.0) + Is / BR * (er - 1.0) + GMIN * (vbe + vbc)
+        return ic, ib, gf, -gr - gr / BR - GMIN, gf / BF + GMIN, gr / BR + GMIN
+
+    def _volts(self, x):
+        vC, vB, vE = self.V(x, 0), self.V(x, 1), self.V(x, 2)
+        return vC, vB, vE, self.pol * (vB - vE), self.pol * (vB - vC)
+
+    def begin(self, x):
+        _c, _b, _e, vbe, vbc = self._volts(x)
+        self.vbe, self.vbc = min(vbe, self.vcrit), min(vbc, self.vcrit)
+
+    def stamp_nl(self, S, x):
+        p = self.pol
+        _c, _b, vE, vbe, vbc = self._volts(x)
+        vbe, l1 = pnjlim(vbe, self.vbe, VT, self.vcrit)
+        vbc, l2 = pnjlim(vbc, self.vbc, VT, self.vcrit)
+        self.vbe, self.vbc = vbe, vbc
+        if l1 or l2:
+            S.limited = True
+        ic, ib, a, bb, c, d = self._eval(vbe, vbc)
+        Jc = [-bb, a + bb, -a]      # d/dV(C, B, E)
+        Jb = [-d, c + d, -c]
+        Je = [-(Jc[i] + Jb[i]) for i in range(3)]
+        VB = vE + p * vbe
+        VC = VB - p * vbc
+        S.nl(self.n, [p * ic, p * ib, -p * (ic + ib)], [Jc, Jb, Je], [VC, VB, vE])
+
+    def currents(self, x):
+        _c, _b, _e, vbe, vbc = self._volts(x)
+        ic, ib = self._eval(vbe, vbc)[:2]
+        p = self.pol
+        return [p * ic, p * ib, -p * (ic + ib)]
+
+    def info(self, x):
+        _c, _b, _e, vbe, vbc = self._volts(x)
+        ic, ib = self._eval(vbe, vbc)[:2]
+        if vbe < 0.45 or ic < 1e-7:
+            region = "Off (cut-off)"
+        elif vbc > 0.3:
+            region = "Saturated (fully on)"
+        else:
+            region = "Active (amplifying)"
+        gain = ("%.0f" % (ic / ib)) if ib > 1e-12 and ic > 0 else "—"
+        return [("State", region), ("Base current", fmt_si(ib, "A")), ("Collector current", fmt_si(ic, "A")),
+                ("V(BE)", fmt_si(vbe * self.pol, "V")), ("Current gain Ic/Ib", gain)]
+
+
+class NMOS(Dev):
+    nonlinear = True
+
+    def __init__(self, sim, comp, nodes, vth=2.1, K=0.05, lam=0.01):
+        Dev.__init__(self, sim, comp, nodes)   # nodes: G, D, S
+        self.vth, self.K, self.lam = vth, K, lam
+        self.vgs = self.vds = 0.0
+
+    def _ids(self, vgs, vds):
+        """Square-law model with a smooth turn-on.  vds >= 0.  Returns (Id, gm, gds)."""
+        s = 0.04
+        u = (vgs - self.vth) / s
+        if u > 40:
+            vov, sg = vgs - self.vth, 1.0
+        elif u < -40:
+            vov, sg = s * math.exp(u), math.exp(u)
+        else:
+            e = math.exp(u)
+            vov, sg = s * math.log1p(e), e / (1.0 + e)
+        K, lam = self.K, self.lam
+        cl = 1.0 + lam * vds
+        if vds < vov:
+            base = vov * vds - 0.5 * vds * vds
+            i = K * base * cl
+            dvov = K * vds * cl
+            gds = K * (vov - vds) * cl + K * base * lam
+        else:
+            base = 0.5 * vov * vov
+            i = K * base * cl
+            dvov = K * vov * cl
+            gds = K * base * lam
+        return i, dvov * sg, gds
+
+    def _eval(self, vgs, vds):
+        """Drain current and its derivatives d/dV(G, D, S) for any sign of vds."""
+        if vds >= 0:
+            i, gm, gds = self._ids(vgs, vds)
+            return i + GMIN * vds, [gm, gds + GMIN, -gm - gds - GMIN]
+        i, gm, gds = self._ids(vgs - vds, -vds)   # source and drain swap roles
+        return -i + GMIN * vds, [-gm, gm + gds + GMIN, -gds - GMIN]
+
+    def begin(self, x):
+        vG, vD, vS = self.V(x, 0), self.V(x, 1), self.V(x, 2)
+        self.vgs, self.vds = vG - vS, vD - vS
+
+    def stamp_nl(self, S, x):
+        vG, vD, vS = self.V(x, 0), self.V(x, 1), self.V(x, 2)
+        vgs, vds = vG - vS, vD - vS
+        if abs(vgs - self.vgs) > 1.0:
+            vgs = self.vgs + math.copysign(1.0, vgs - self.vgs)
+            S.limited = True
+        if abs(vds - self.vds) > 3.0:
+            vds = self.vds + math.copysign(3.0, vds - self.vds)
+            S.limited = True
+        self.vgs, self.vds = vgs, vds
+        Id, Jd = self._eval(vgs, vds)
+        S.nl(self.n, [0.0, Id, -Id], [[0.0, 0.0, 0.0], Jd, [-v for v in Jd]], [vS + vgs, vS + vds, vS])
+
+    def currents(self, x):
+        vG, vD, vS = self.V(x, 0), self.V(x, 1), self.V(x, 2)
+        Id = self._eval(vG - vS, vD - vS)[0]
+        return [0.0, Id, -Id]
+
+    def info(self, x):
+        vG, vD, vS = self.V(x, 0), self.V(x, 1), self.V(x, 2)
+        Id = self.currents(x)[1]
+        on = vG - vS > self.vth
+        return [("State", "On" if on else "Off"), ("V(GS)", fmt_si(vG - vS, "V")),
+                ("Drain current", fmt_si(Id, "A")), ("V(DS)", fmt_si(vD - vS, "V"))]
+
+
+class OpAmp(Dev):
+    nonlinear = True
+    nbr = 1
+    GAIN = 2e5
+    ROUT = 50.0
+
+    def __init__(self, sim, comp, nodes, fixed_hi=None, fixed_lo=None, drop_hi=1.5, drop_lo=1.5):
+        Dev.__init__(self, sim, comp, nodes)   # nodes: IN−, IN+, OUT, V+, V−
+        self.fixed_hi, self.fixed_lo = fixed_hi, fixed_lo
+        self.drop_hi, self.drop_lo = drop_hi, drop_lo
+
+    def _rails(self, x):
+        vc = self.fixed_hi if self.fixed_hi is not None else self.V(x, 3)
+        ve = self.fixed_lo if self.fixed_lo is not None else self.V(x, 4)
+        return vc, ve
+
+    def _f(self, vn, vp, vc, ve):
+        hi, lo = vc - self.drop_hi, ve + self.drop_lo
+        if hi < lo:
+            hi = lo = 0.5 * (hi + lo)
+        half = max(0.5 * (hi - lo), 1e-3)
+        mid = 0.5 * (hi + lo)
+        u = self.GAIN * (vp - vn) / half
+        T = math.tanh(u)
+        Tp = 1.0 - T * T
+        q = T - u * Tp
+        return mid + half * T, self.GAIN * Tp, 0.5 + 0.5 * q, 0.5 - 0.5 * q, T
+
+    def stamp_nl(self, S, x):
+        k = self.br
+        nN, nP, nO, nC, nE = self.n
+        vn, vp = self.V(x, 0), self.V(x, 1)
+        vc, ve = self._rails(x)
+        f, gd, dh, dl, _T = self._f(vn, vp, vc, ve)
+        A = S.A
+        if nO:
+            A[nO - 1][k] += 1.0
+            A[k][nO - 1] += 1.0
+        A[k][k] -= self.ROUT
+        rhs = f
+        terms = [(nP, gd, vp), (nN, -gd, vn)]
+        if self.fixed_hi is None:
+            terms.append((nC, dh, vc))
+        if self.fixed_lo is None:
+            terms.append((nE, dl, ve))
+        for node, d, v in terms:
+            if node:
+                A[k][node - 1] -= d
+            rhs -= d * v
+        S.b[k] += rhs
+
+    def currents(self, x):
+        return [0.0, 0.0, x[self.br], 0.0, 0.0]
+
+    def info(self, x):
+        vn, vp = self.V(x, 0), self.V(x, 1)
+        vc, ve = self._rails(x)
+        T = self._f(vn, vp, vc, ve)[4]
+        state = "Saturated high" if T > 0.98 else "Saturated low" if T < -0.98 else "Linear (amplifying)"
+        return [("State", state), ("Output", fmt_si(self.V(x, 2), "V")),
+                ("V(+) − V(−)", fmt_si(vp - vn, "V")), ("Output current", fmt_si(-x[self.br], "A"))]
+
+
+class Gate(Dev):
+    nonlinear = True
+    nbr = 1
+    VDD = 5.0
+    ROUT = 50.0
+    FUNCS = {
+        "and": lambda a, b: (a * b, b, a),
+        "nand": lambda a, b: (1 - a * b, -b, -a),
+        "or": lambda a, b: (a + b - a * b, 1 - b, 1 - a),
+        "nor": lambda a, b: (1 - (a + b - a * b), b - 1, a - 1),
+        "xor": lambda a, b: (a + b - 2 * a * b, 1 - 2 * b, 1 - 2 * a),
+        "not": lambda a, b: (1 - a, -1.0, 0.0),
+    }
+
+    def __init__(self, sim, comp, nodes, kind):
+        Dev.__init__(self, sim, comp, nodes)   # inputs..., output (last)
+        self.kind = kind
+
+    @staticmethod
+    def _s(v):
+        u = max(-40.0, min(40.0, (v - 2.5) * 8.0))
+        s = 1.0 / (1.0 + math.exp(-u))
+        return s, 8.0 * s * (1.0 - s)
+
+    def stamp_nl(self, S, x):
+        k = self.br
+        ins = self.n[:-1]
+        nO = self.n[-1]
+        vs = [self.V(x, i) for i in range(len(ins))]
+        sa, da = self._s(vs[0])
+        sb, db = self._s(vs[1]) if len(ins) > 1 else (0.0, 0.0)
+        f, dfa, dfb = self.FUNCS[self.kind](sa, sb)
+        A = S.A
+        if nO:
+            A[nO - 1][k] += 1.0
+            A[k][nO - 1] += 1.0
+        A[k][k] -= self.ROUT
+        rhs = self.VDD * f
+        for node, d, v in ((ins[0], self.VDD * dfa * da, vs[0]),
+                           (ins[1] if len(ins) > 1 else 0, self.VDD * dfb * db, vs[1] if len(ins) > 1 else 0.0)):
+            if node:
+                A[k][node - 1] -= d
+            rhs -= d * v
+        S.b[k] += rhs
+
+    def currents(self, x):
+        return [0.0] * (len(self.n) - 1) + [x[self.br]]
+
+    def info(self, x):
+        names = ["A", "B"][:len(self.n) - 1]
+        ins = ", ".join("%s = %d" % (nm, 1 if self.V(x, i) > 2.5 else 0) for i, nm in enumerate(names))
+        vo = self.V(x, len(self.n) - 1)
+        return [("Inputs", ins), ("Output Y", "%d  (%s)" % (1 if vo > 2.5 else 0, fmt_si(vo, "V")))]
+
+
+class Timer555(Dev):
+    nbr = 1
+
+    def __init__(self, sim, comp, nodes, m, reset_wired):
+        # nodes: TRIG, THRES, DISCH, CTRL, OUT, VCC, RESET, GND;  m = internal 1/3-VCC node
+        Dev.__init__(self, sim, comp, nodes)
+        self.m = m
+        self.reset_wired = reset_wired
+        self.Q = False
+
+    def stamp_lin(self, S):
+        nT, nTh, nD, nC, nO, nV, nR, nG = self.n
+        S.g(nV, nC, 1 / 5000.0)
+        S.g(nC, self.m, 1 / 5000.0)
+        S.g(self.m, nG, 1 / 5000.0)
+        S.g(nD, nG, 1e-10 if self.Q else 0.1)
+        k = self.br
+        A = S.A
+        if nO:
+            A[nO - 1][k] += 1.0
+            A[k][nO - 1] += 1.0
+        A[k][k] -= 10.0
+        ref = nV if self.Q else nG
+        if ref:
+            A[k][ref - 1] -= 1.0
+
+    def rhs(self, S):
+        S.b[self.br] += -1.7 if self.Q else 0.05
+
+    def discrete(self, x):
+        V = lambda i: self.V(x, i)
+        vcc = V(5) - V(7)
+        if vcc < 3.0:
+            q = False
+        elif self.reset_wired and V(6) - V(7) < 0.7:
+            q = False
+        elif V(0) < x[self.m - 1]:
+            q = True
+        elif V(1) > V(3):
+            q = False
+        else:
+            q = self.Q
+        if q != self.Q:
+            self.Q = q
+            return True
+        return False
+
+    def currents(self, x):
+        V = lambda i: self.V(x, i)
+        vm = x[self.m - 1]
+        gD = 1e-10 if self.Q else 0.1
+        iD = (V(2) - V(7)) * gD
+        iV = (V(5) - V(3)) / 5000.0
+        iC = (V(3) - V(5)) / 5000.0 + (V(3) - vm) / 5000.0
+        iG = -iD - (vm - V(7)) / 5000.0
+        return [0.0, 0.0, iD, iC, x[self.br], iV, 0.0, iG]
+
+    def info(self, x):
+        vm = x[self.m - 1]
+        return [("Output", "HIGH" if self.Q else "LOW"), ("OUT voltage", fmt_si(self.V(x, 4), "V")),
+                ("Switches high below", fmt_si(vm, "V") + " (TRIG)"),
+                ("Switches low above", fmt_si(self.V(x, 3), "V") + " (THRES)")]
+
+    def export(self):
+        return {"Q": self.Q}
+
+    def restore(self, st):
+        self.Q = bool(st.get("Q"))
+
+
+class Regulator(Dev):
+    nonlinear = True
+    nbr = 1
+    DROP = 2.0
+    ROUT = 0.02
+
+    def __init__(self, sim, comp, nodes, vreg=5.0):
+        Dev.__init__(self, sim, comp, nodes)   # nodes: IN, OUT, GND
+        self.vreg = vreg
+
+    def _f(self, u):
+        s = 0.05
+        z = (u - self.DROP) / s
+        if z > 40:
+            g, dg = u - self.DROP, 1.0
+        elif z < -40:
+            g, dg = s * math.exp(z), math.exp(z)
+        else:
+            e = math.exp(z)
+            g, dg = s * math.log1p(e), e / (1.0 + e)
+        w = (self.vreg - g) / s
+        if w > 40:
+            return g, dg
+        if w < -40:
+            return self.vreg, 0.0
+        e = math.exp(w)
+        return self.vreg - s * math.log1p(e), e / (1.0 + e) * dg
+
+    def stamp_nl(self, S, x):
+        k = self.br
+        nI, nO, nG = self.n
+        u = self.V(x, 0) - self.V(x, 2)
+        f, df = self._f(u)
+        A = S.A
+        if nI:
+            A[nI - 1][k] += 1.0
+        if nO:
+            A[nO - 1][k] -= 1.0
+            A[k][nO - 1] += 1.0
+        if nG:
+            A[k][nG - 1] -= 1.0 - df
+        if nI:
+            A[k][nI - 1] -= df
+        A[k][k] += self.ROUT
+        S.b[k] += f - df * u
+
+    def currents(self, x):
+        j = x[self.br]
+        return [j, -j, 0.0]
+
+    def info(self, x):
+        return [("Input", fmt_si(self.V(x, 0) - self.V(x, 2), "V")),
+                ("Output", fmt_si(self.V(x, 1) - self.V(x, 2), "V")),
+                ("Load current", fmt_si(x[self.br], "A"))]
+
+    def warn(self, x):
+        u = self.V(x, 0) - self.V(x, 2)
+        out = []
+        if 1.0 < u < self.vreg + self.DROP - 0.1:
+            out.append(("Warning", "%s needs at least about %s at IN to give a steady %s (it has %s)."
+                        % (self.label, fmt_si(self.vreg + self.DROP, "V"), fmt_si(self.vreg, "V"), fmt_si(u, "V"))))
+        if x[self.br] > 1.5:
+            out.append(("Warning", "%s is asked for %s; a 7805 can only give about 1.5 A." % (self.label, fmt_si(x[self.br], "A"))))
+        return out
+
+
+class TempSensor(Dev):
+    nbr = 1
+
+    def __init__(self, sim, comp, nodes):
+        Dev.__init__(self, sim, comp, nodes)   # nodes: +VS, VOUT, GND
+        self.on = False
+
+    def temp(self):
+        return float(self.comp.get("temp", 25.0))
+
+    def stamp_lin(self, S):
+        k = self.br
+        nS, nO, nG = self.n
+        A = S.A
+        if nO:
+            A[nO - 1][k] += 1.0
+            A[k][nO - 1] += 1.0
+        if nG:
+            A[k][nG - 1] -= 1.0
+        A[k][k] -= 10.0
+
+    def rhs(self, S):
+        S.b[self.br] += (0.5 + 0.01 * self.temp()) if self.on else 0.0
+
+    def discrete(self, x):
+        on = self.V(x, 0) - self.V(x, 2) > 2.7
+        if on != self.on:
+            self.on = on
+            return True
+        return False
+
+    def currents(self, x):
+        return [0.0, x[self.br], 0.0]
+
+    def info(self, x):
+        return [("Temperature", "%.0f °C" % self.temp()),
+                ("VOUT", fmt_si(self.V(x, 1) - self.V(x, 2), "V") if self.on else "0 V (needs 2.7 V or more at +VS)")]
+
+
+class Relay(Dev):
+    def __init__(self, sim, comp, nodes, rated=5.0):
+        Dev.__init__(self, sim, comp, nodes)   # nodes: VCC, GND, IN, NO, COM, NC
+        self.rated = rated
+        self.on = False
+
+    def stamp_lin(self, S):
+        nV, nG, nI, nNO, nCOM, nNC = self.n
+        S.g(nV, nG, 1 / 70.0 if self.on else 1e-4)
+        S.g(nI, nG, 1e-4)
+        S.g(nCOM, nNO, 20.0 if self.on else 1e-10)
+        S.g(nCOM, nNC, 1e-10 if self.on else 20.0)
+
+    def discrete(self, x):
+        vs = self.V(x, 0) - self.V(x, 1)
+        vin = self.V(x, 2) - self.V(x, 1)
+        on = vs > 0.6 * self.rated and vin > (0.3 if self.on else 0.5) * vs
+        if on != self.on:
+            self.on = on
+            return True
+        return False
+
+    def currents(self, x):
+        V = lambda i: self.V(x, i)
+        icoil = (V(0) - V(1)) * (1 / 70.0 if self.on else 1e-4)
+        iin = (V(2) - V(1)) * 1e-4
+        ino = (V(3) - V(4)) * (20.0 if self.on else 1e-10)
+        inc = (V(5) - V(4)) * (1e-10 if self.on else 20.0)
+        return [icoil, -icoil - iin, iin, ino, -ino - inc, inc]
+
+    def info(self, x):
+        return [("Relay", "ON (energised)" if self.on else "OFF"),
+                ("Contacts", "COM–NO closed" if self.on else "COM–NC closed")]
+
+    def view(self, x):
+        return {"reading": "ON" if self.on else "OFF"}
+
+    def export(self):
+        return {"on": self.on}
+
+    def restore(self, st):
+        self.on = bool(st.get("on"))
+
+
+class Probe(Dev):
+    def __init__(self, sim, comp, nodes, wired):
+        Dev.__init__(self, sim, comp, nodes)
+        self.wired = wired
+
+    def info(self, x):
+        return [("Voltage", fmt_si(self.V(x, 0), "V") if self.wired else "not connected")]
+
+    def view(self, x):
+        return {"reading": fmt_si(self.V(x, 0), "V") if self.wired else "—"}
+
+
+def _led_spec(value):
+    v = (value or "").lower()
+    for name, vf, col in LED_COLORS:
+        if re.search(r"\b%s\b" % name, v):
+            return vf, col
+    return 1.8, "#ef4444"
+
+
+def _make_device(sim, c, rd, model):
+    """Create the simulation model for one placed part (None = nothing to simulate)."""
+    val = c.get("value", "") or ""
+    lab = c.get("label") or rd.name
+
+    def pins(*names):
+        return sim.pins(c, rd, names)
+
+    def num(unit, default, positive=True):
+        v = qty(val, unit)
+        if v is None or (positive and v <= 0):
+            if val.strip():
+                sim.note("Warning", c["id"], "%s: couldn’t read the value “%s”, so %s is used."
+                         % (lab, val, fmt_si(default, _UNIT_SYM.get(unit, ""))))
+            return default
+        return v
+
+    def make(cls, names, *args, **kw):
+        nodes, idx = pins(*names)
+        d = cls(sim, c, nodes, *args, **kw)
+        d.pidx = idx
+        return d
+
+    if model == "resistor":
+        return make(Resistor, ("1", "2"), num("ohm", 1000.0))
+    if model == "ldr":
+        return make(LDR, ("1", "2"), 1.0)
+    if model == "potentiometer":
+        return make(Pot, ("1", "W", "2"), num("ohm", 10e3))
+    if model == "fuse":
+        return make(Fuse, ("1", "2"), num("a", 1.0))
+    if model == "capacitor":
+        return make(Capacitor, ("1", "2"), num("f", 100e-9))
+    if model == "capacitor_pol":
+        return make(Capacitor, ("+", "−"), num("f", 10e-6), polar=True)
+    if model == "inductor":
+        return make(Inductor, ("1", "2"), num("h", 1e-3))
+    if model == "battery":
+        V = num("v", 9.0, positive=False)
+        return make(VSource, ("+", "−"), V, R=max(0.05, min(2.0, abs(V) / 6.0)), kind="battery")
+    if model == "dc_source":
+        return make(VSource, ("+", "−"), num("v", 5.0, positive=False))
+    if model in ("ac_source", "square_source"):
+        sq = model == "square_source"
+        V = num("v", 5.0 if sq else 10.0, positive=False)
+        low = val.lower()
+        if not sq and "rms" in low:
+            V *= math.sqrt(2)
+        elif not sq and re.search(r"p-?p\b", low):
+            V /= 2.0
+        f = qty(val, "hz", allow_bare=False)
+        if f is None or f <= 0:
+            f = 1.0 if sq else 60.0
+        names = ("+", "−") if sq else ("1", "2")
+        return make(VSource, names, V, wave="square" if sq else "sine", f=f)
+    if model == "current_source":
+        return make(ISource, ("+", "−"), num("a", 1e-3, positive=False))
+    if model == "voltmeter":
+        return make(Resistor, ("+", "−"), 10e6, kind="voltmeter")
+    if model == "ammeter":
+        return make(VSource, ("+", "−"), 0.0, kind="ammeter")
+    if model in ("switch", "pushbutton"):
+        return make(Switch, ("1", "2"), push=(model == "pushbutton"))
+    if model == "lamp":
+        rv, rp = qty(val, "v", False) or 6.0, qty(val, "w", False) or 1.0
+        return make(Resistor, ("1", "2"), rv * rv / rp, kind="lamp", rated=(rv, rp))
+    if model == "motor":
+        rv, ri = qty(val, "v", False) or 6.0, qty(val, "a", False) or 0.2
+        return make(Resistor, ("1", "2"), rv / ri, kind="motor", rated=(rv, 0.0))
+    if model == "buzzer":
+        rv = qty(val, "v", False) or 5.0
+        return make(Resistor, ("+", "−"), rv / 0.03, kind="buzzer", rated=(rv, 0.0))
+    if model == "diode":
+        low = val.lower()
+        if re.search(r"400[1-7]", low):
+            return make(Diode, ("A", "K"), Is=14.1e-9, N=1.98)
+        if "5817" in low or "5819" in low or "schottky" in low:
+            return make(Diode, ("A", "K"), Is=3e-6, N=1.3)
+        return make(Diode, ("A", "K"))
+    if model == "zener":
+        return make(Diode, ("A", "K"), bv=num("v", 5.1))
+    if model == "led":
+        vf, col = _led_spec(val)
+        n_ = 2.0
+        Is = 0.01 / math.exp(vf / (n_ * VT))
+        return make(Diode, ("A", "K"), Is=Is, N=n_, led=col)
+    if model in ("npn", "pnp"):
+        m = re.search(r"(?:hfe|β|beta)\s*=?\s*(\d+)", val, re.I)
+        bf = float(m.group(1)) if m else 150.0
+        return make(BJT, ("C", "B", "E"), pol=1 if model == "npn" else -1, BF=bf)
+    if model == "nmos":
+        low = val.lower()
+        if "irl" in low:
+            return make(NMOS, ("G", "D", "S"), vth=1.5, K=20.0)
+        if "irf" in low:
+            return make(NMOS, ("G", "D", "S"), vth=3.0, K=10.0)
+        return make(NMOS, ("G", "D", "S"))
+    if model == "opamp":
+        low = val.lower()
+        dh, dl = 1.5, 1.5
+        if "358" in low or "324" in low:
+            dl = 0.02
+        if "rail" in low or "mcp6" in low or "tlv" in low:
+            dh = dl = 0.02
+        nodes, idx = pins("IN−", "IN+", "OUT", "V+", "V−")
+        hi = None if sim.is_wired(c, idx[3]) else 15.0
+        lo = None if sim.is_wired(c, idx[4]) else -15.0
+        if hi is not None or lo is not None:
+            sim.note("Info", c["id"], "%s: supply pin%s not connected, so ±15 V supplies are assumed."
+                     % (lab, "s V+ and V− are" if (hi is not None and lo is not None) else (" V+ is" if hi is not None else " V− is")))
+        d = OpAmp(sim, c, nodes, hi, lo, dh, dl)
+        d.pidx = idx
+        return d
+    if model in Gate.FUNCS:
+        names = ("A", "Y") if model == "not" else ("A", "B", "Y")
+        nodes, idx = pins(*names)
+        loose = [nm for nm, i in zip(names[:-1], idx[:-1]) if not sim.is_wired(c, i)]
+        if loose:
+            sim.note("Info", c["id"], "%s: input %s not connected, so it counts as 0 (LOW)." % (lab, " and ".join(loose)))
+        d = Gate(sim, c, nodes, model)
+        d.pidx = idx
+        return d
+    if model == "timer555":
+        names = ("TRIG", "THRES", "DISCH", "CTRL", "OUT", "VCC", "RESET", "GND")
+        nodes, idx = pins(*names)
+        reset_wired = sim.is_wired(c, idx[6])
+        if not reset_wired:
+            sim.note("Info", c["id"], "%s: RESET isn’t connected, so it is treated as HIGH. "
+                                      "In a real circuit, connect RESET to VCC." % lab)
+        m = sim.new_node("%s (internal)" % lab)
+        d = Timer555(sim, c, nodes, m, reset_wired)
+        d.pidx = idx
+        return d
+    if model == "reg7805":
+        return make(Regulator, ("IN", "OUT", "GND"), qty(val, "v", False) or 5.0)
+    if model == "tmp36":
+        return make(TempSensor, ("+VS", "VOUT", "GND"))
+    if model == "relay":
+        return make(Relay, ("VCC", "GND", "IN", "NO", "COM", "NC"), qty(val, "v") or 5.0)
+    if model == "probe":
+        nodes, idx = pins("V")
+        d = Probe(sim, c, nodes, sim.is_wired(c, idx[0]))
+        d.pidx = idx
+        return d
+    return None
+
+
+SIM_MODELS = {"resistor", "ldr", "potentiometer", "fuse", "capacitor", "capacitor_pol", "inductor",
+              "battery", "dc_source", "ac_source", "square_source", "current_source", "voltmeter",
+              "ammeter", "switch", "pushbutton", "lamp", "motor", "buzzer", "diode", "zener", "led",
+              "npn", "pnp", "nmos", "opamp", "and", "nand", "or", "nor", "xor", "not", "timer555",
+              "reg7805", "tmp36", "relay", "probe", "vcc", "ground"}
+
+
+def sim_model_of(library, c):
+    d = library.get(c["def"])
+    if not d:
+        return None
+    return d.get("sim") or d.get("id")
+
+
+class Sim:
+    """A running simulation of the app's current circuit."""
+
+    def __init__(self, app, carry=None, t=0.0):
+        self.app = app
+        self.t = t
+        self.version = 0
+        self.error = None
+        self.notes = []
+        self.devs = []
+        self.by_cid = {}
+        self.node_of = {}
+        self.node_names = ["GND"]
+        self.nn = 0
+        self.N = 0
+        self.x = []
+        self.nl = []
+        self.reactive = []
+        self.static = True
+        self.dirty = True
+        self.force_be = True
+        self.pending = 0.0
+        self.slow = False
+        self.gextra = 0.0
+        self.on_sample = None
+        self.pressed = set((carry or {}).get("_pressed", ()))
+        self._lin_key = None
+        self._lin_A = None
+        self._lin_LU = None
+        self.T_disp = None
+        self.h = 1e-3
+        self.auto_speed = 1.0
+        self.auto_window = 10.0
+        self.ref_note = None
+        try:
+            self._build(carry or {})
+            self.S = Stamp(0)
+            self._timing()
+        except SimError as e:
+            self.error = str(e)
+        except Exception as e:  # never let a simulator bug take the editor down
+            traceback.print_exc()
+            self.error = "The simulator hit an internal problem (%s)." % e
+        if self.error and (self.N == 0 or len(self.x) != self.N):
+            self.devs, self.by_cid, self.nl, self.reactive = [], {}, [], []
+            self.N, self.x = 0, []
+        if not hasattr(self, "S"):
+            self.S = Stamp(0)
+
+    # ---------------------------------------------------------------- building
+    def note(self, sev, cid, msg):
+        self.notes.append((sev, cid, msg))
+
+    def new_node(self, name):
+        self.nn += 1
+        self.node_names.append(name)
+        return self.nn
+
+    def is_wired(self, c, idx):
+        return (c["id"], idx) in self.wired
+
+    def pins(self, c, rd, names):
+        nodes, idx = [], []
+        for nm in names:
+            i = next((k for k, p in enumerate(rd.pins) if p["name"] == nm), None)
+            if i is None:
+                raise _MissingPin(nm)
+            key = (c["id"], i)
+            if key not in self.node_of:
+                self.node_of[key] = self.new_node("%s.%s" % (c.get("label") or rd.name, nm))
+            nodes.append(self.node_of[key])
+            idx.append(i)
+        return nodes, idx
+
+    def _build(self, carry):
+        app = self.app
+        nets = app.compute_nets()
+        net_of = {}
+        gnd = None
+        for i, net in enumerate(nets):
+            if net["name"] == "GND":
+                gnd = i
+            for k in net["pins"]:
+                net_of[k] = i
+        self.wired = set(net_of)
+        if gnd is None and nets:
+            ref = None
+            for cid, c in app.comps.items():
+                pn = {"battery": "−", "dc_source": "−", "ac_source": "2", "square_source": "−",
+                      "current_source": "−"}.get(sim_model_of(app.library, c))
+                if pn:
+                    rd = app.rdef(c)
+                    i = next((k for k, p in enumerate(rd.pins) if p["name"] == pn), None)
+                    if i is not None and (cid, i) in net_of:
+                        ref = net_of[(cid, i)]
+                        break
+            gnd = ref if ref is not None else 0
+            self.ref_note = nets[gnd]["name"]
+            self.note("Info", None, "There is no Ground symbol, so voltages are measured from net %s. "
+                                    "Add a Ground (0 V) to choose the reference point yourself." % nets[gnd]["name"])
+        net_node = {}
+        for i, net in enumerate(nets):
+            if i == gnd:
+                net_node[i] = 0
+                self.node_names[0] = net["name"]
+            else:
+                net_node[i] = self.new_node(net["name"])
+        for k, i in net_of.items():
+            self.node_of[k] = net_node[i]
+
+        unsupported = []
+        rails = {}
+        for cid, c in app.comps.items():
+            rd = app.rdef(c)
+            model = sim_model_of(app.library, c)
+            lab = c.get("label") or rd.name
+            if model == "ground":
+                continue
+            if model == "vcc":
+                key = (cid, 0)
+                if key not in net_of:
+                    continue
+                node = self.node_of[key]
+                v = qty(c.get("value", ""), "v")
+                if v is None:
+                    v = 5.0
+                    self.note("Warning", cid, "%s: couldn’t read the rail voltage “%s”, so +5 V is used."
+                              % (lab, c.get("value", "")))
+                if node == 0:
+                    raise SimError("Short circuit: power rail %s is wired to Ground." % (c.get("value") or lab))
+                if node in rails:
+                    if abs(rails[node] - v) > 1e-9:
+                        raise SimError("Two different power rails (%s and %s) are wired together."
+                                       % (fmt_si(rails[node], "V"), fmt_si(v, "V")))
+                    continue
+                rails[node] = v
+                d = VSource(self, c, [node, 0], v, kind="rail")
+                d.pidx = [0, -1]
+                self.devs.append(d)
+                self.by_cid[cid] = d
+                continue
+            try:
+                d = _make_device(self, c, rd, model)
+            except _MissingPin as e:
+                self.note("Warning", cid, "%s can’t be simulated: it has no pin named “%s”." % (lab, e.args[0]))
+                continue
+            if d is None:
+                if any((cid, i) in self.wired for i in range(len(rd.pins))):
+                    unsupported.append(lab)
+                continue
+            st = carry.get(cid)
+            if st:
+                d.restore(st)
+            self.devs.append(d)
+            self.by_cid[cid] = d
+        if unsupported:
+            self.note("Info", None, "Not simulated (their pins are left unconnected): %s. Microcontroller boards, "
+                                    "digital modules and parts you made yourself have no simulation model."
+                      % ", ".join(unsupported))
+        k = self.nn
+        for d in self.devs:
+            if d.nbr:
+                d.br = k
+                k += 1
+        self.N = k
+        self.x = [0.0] * k
+        self.nl = [d for d in self.devs if d.nonlinear]
+        self.reactive = [d for d in self.devs if d.reactive]
+        self.static = not any(d.reactive or d.timevar for d in self.devs)
+        if not self.devs:
+            raise SimError("There is nothing to simulate yet. Add a power source and some parts, and wire them up.")
+
+    # ---------------------------------------------------------------- solving
+    def _factor(self, A):
+        try:
+            return lu_factor(A)
+        except _Singular as e:
+            raise SimError(self._singular_msg(e.col))
+
+    def _singular_msg(self, col):
+        if col >= self.nn:
+            for d in self.devs:
+                if d.br == col:
+                    if isinstance(d, VSource) and d.kind == "ammeter":
+                        return ("%s (ammeter) is short-circuiting a voltage source. An ammeter has almost no "
+                                "resistance, so it goes in series with a part, never straight across a supply."
+                                % d.label)
+                    if isinstance(d, Inductor):
+                        return ("%s (inductor) is connected straight across a voltage source. An inductor is "
+                                "a plain wire for DC, so this is a short circuit." % d.label)
+                    return ("Short circuit: %s is connected straight across another voltage source or a plain "
+                            "wire, so the current would be infinite. Check its wiring." % d.label)
+        return "The circuit can’t be solved. A voltage source may be short-circuited."
+
+    def _base(self, S):
+        key = (S.dc, 0.0 if S.dc else S.h, S.method, self.version, self.gextra, id(S.open) if S.open else 0)
+        if key != self._lin_key:
+            N = self.N
+            S.A = [[0.0] * N for _ in range(N)]
+            for d in self.devs:
+                d.stamp_lin(S)
+            g = GMIN + self.gextra
+            for i in range(self.nn):
+                S.A[i][i] += g
+            self._lin_A = S.A
+            self._lin_key = key
+            self._lin_LU = None
+        return self._lin_A
+
+    def _check(self, x):
+        for i in range(self.N):
+            if not abs(x[i]) < 1e12:   # also catches NaN
+                raise SimError(self._singular_msg(i if i >= self.nn else -1))
+        return x
+
+    def _solve(self, S, guess, maxit=100):
+        A0 = self._base(S)
+        N = self.N
+        S.b = [0.0] * N
+        for d in self.devs:
+            d.rhs(S)
+        b0 = S.b
+        if not self.nl:
+            if self._lin_LU is None:
+                self._lin_LU = self._factor(A0)
+            return self._check(lu_solve(self._lin_LU, b0))
+        x = list(guess)
+        for d in self.nl:
+            d.begin(x)
+        nn = self.nn
+        for _it in range(maxit):
+            S.A = [r[:] for r in A0]
+            S.b = b0[:]
+            S.limited = False
+            for d in self.nl:
+                d.stamp_nl(S, x)
+            xn = lu_solve(self._factor(S.A), S.b)
+            conv = not S.limited
+            if conv:
+                for i in range(N):
+                    a, b = xn[i], x[i]
+                    tol = (1e-6 if i < nn else 1e-9) + 1e-4 * max(abs(a), abs(b))
+                    if abs(a - b) > tol:
+                        conv = False
+                        break
+            x = xn
+            if conv:
+                return self._check(x)
+            if not all(abs(v) < 1e12 for v in x):
+                raise NoConvergence()
+        raise NoConvergence()
+
+    def _dc(self, S, guess):
+        """DC operating point, with gmin stepping and source stepping as fall-backs."""
+        S.dc, S.open, S.scale = True, None, 1.0
+        try:
+            return self._solve(S, guess)
+        except NoConvergence:
+            pass
+        x = list(guess)
+        try:
+            for g in (1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-9, 1e-10):
+                self.gextra = g
+                x = self._solve(S, x, 200)
+            self.gextra = 0.0
+            return self._solve(S, x, 200)
+        except NoConvergence:
+            pass
+        finally:
+            self.gextra = 0.0
+        x = [0.0] * self.N
+        try:
+            for k in range(1, 21):
+                S.scale = k / 20.0
+                x = self._solve(S, x, 200)
+            return x
+        except NoConvergence:
+            raise SimError("The simulator couldn’t find a steady state for this circuit. This can happen when "
+                           "a logic gate’s output is wired straight back to its own input, or when parts are "
+                           "wired in an unusual loop.")
+        finally:
+            S.scale = 1.0
+
+    def solve_static(self):
+        """Circuits without capacitors, inductors or changing sources: just the DC answer."""
+        S = self.S
+        S.t, S.method = self.t, "be"
+        x = self.x
+        for _ in range(40):
+            x = self._dc(S, x)
+            for d in self.devs:
+                d.accept(S, x)
+            changed = [d for d in self.devs if d.discrete(x)]
+            if not changed:
+                break
+            self.version += 1
+        self.x = x
+        self.dirty = False
+
+    def step(self, h, depth=0):
+        S = self.S
+        S.dc, S.open, S.scale = False, None, 1.0
+        S.h = h
+        S.method = "be" if self.force_be else "bdf2"
+        S.t = self.t + h
+        try:
+            x = self._solve(S, self.x)
+        except NoConvergence:
+            if depth >= 2:
+                raise SimError("The simulation stopped at t = %s because the circuit has no steady state the "
+                               "simulator can find. This can happen when a logic gate’s output is wired straight "
+                               "back to its own input, or when parts are wired in an unusual loop." % fmt_si(self.t, "s"))
+            self.force_be = True
+            for _ in range(10):
+                self.step(h / 10.0, depth + 1)
+            self.force_be = True
+            return
+        self.x = x
+        self.t = S.t
+        for d in self.devs:
+            d.accept(S, x)
+        changed = [d for d in self.devs if d.discrete(x)]
+        if changed:
+            self.version += 1
+        self.force_be = bool(changed) or depth > 0
+        if self.on_sample is not None and depth == 0:
+            self.on_sample(self.t)
+
+    def advance(self, dt, budget=0.025):
+        """Move simulated time forward by dt, spending at most `budget` seconds of real time."""
+        if self.error:
+            return
+        try:
+            if self.static:
+                if self.dirty:
+                    self.solve_static()
+                self.t += dt
+                if self.on_sample is not None:
+                    self.on_sample(self.t)
+                return
+            self.pending += dt
+            h = self.h
+            end = time.perf_counter() + budget
+            self.slow = False
+            while self.pending >= 0.5 * h:
+                self.step(h)
+                self.pending -= h
+                if time.perf_counter() > end:
+                    if self.pending > h:
+                        self.slow = True
+                        self.pending = 0.0
+                    break
+        except SimError as e:
+            self.error = str(e)
+        except Exception as e:
+            traceback.print_exc()
+            self.error = "The simulator hit an internal problem (%s)." % e
+
+    def bump(self):
+        """Something the user controls changed (switch, slider): re-solve."""
+        self.version += 1
+        self.force_be = True
+        self.dirty = True
+
+    # ---------------------------------------------------------------- time scales
+    def _jacobian(self, x, open_dev=None):
+        S = self.S
+        S.dc, S.open = True, open_dev
+        A0 = self._base(S)
+        S.A = [r[:] for r in A0]
+        S.b = [0.0] * self.N
+        for d in self.nl:
+            d.begin(x)
+            d.stamp_nl(S, x)
+        S.open = None
+        return S.A
+
+    def _thevenin(self, LU, a, b):
+        e = [0.0] * self.N
+        if a:
+            e[a - 1] += 1.0
+        if b:
+            e[b - 1] -= 1.0
+        z = lu_solve(LU, e)
+        return (z[a - 1] if a else 0.0) - (z[b - 1] if b else 0.0)
+
+    def _timing(self):
+        """Pick the time step, default speed and scope window from the circuit's time constants."""
+        P, T = [], []
+        for d in self.devs:
+            P += d.periods()
+        caps = [d for d in self.devs if isinstance(d, Capacitor)]
+        inds = [d for d in self.devs if isinstance(d, Inductor)]
+        if caps or inds:
+            try:
+                x = self._dc(self.S, [0.0] * self.N)
+                if caps:
+                    LU = lu_factor(self._jacobian(x))
+                    for c in caps:
+                        T.append(self._thevenin(LU, c.n[0], c.n[1]) * c.C)
+                for L_ in inds:
+                    LU = lu_factor(self._jacobian(x, L_))
+                    R = self._thevenin(LU, L_.n[0], L_.n[1])
+                    if R > 0:
+                        T.append(L_.L / R)
+            except Exception:
+                pass
+            for L_ in inds[:8]:
+                for c in caps[:8]:
+                    P.append(2 * math.pi * math.sqrt(L_.L * c.C))
+        P = [p for p in P if 1e-9 < p < 1e4]
+        T = [t for t in T if 1e-9 < t < 1e3]
+        Td = min(P) if P else (max(T) if T else None)
+        self.T_disp = Td
+        self.h = Td / 100.0 if Td else 1e-3
+        if P:
+            self.h = min(self.h, min(P) / 100.0)
+        self.auto_speed = min(1.0, Td / 0.5) if Td else 1.0
+        self.auto_window = 5.0 * Td if Td else 10.0
+        self._lin_key = None
+
+    # ---------------------------------------------------------------- AC analysis
+    def ac_sweep(self, src, out_node, freqs):
+        """Small-signal response V(out) / V(source) at each frequency (complex)."""
+        S = self.S
+        S.t, S.method = 0.0, "be"
+        x = self._dc(S, [0.0] * self.N)
+        J = self._jacobian(x)
+        res = []
+        N = self.N
+        for f in freqs:
+            w = 2 * math.pi * f
+            A = [[complex(v) for v in row] for row in J]
+            for d in self.reactive:
+                d.ac(A, w)
+            b = [0j] * N
+            b[src.br] = 1.0
+            try:
+                y = lu_solve(lu_factor(A, 1e-30), b)
+                res.append(y[out_node - 1] if out_node else 0j)
+            except _Singular:
+                res.append(complex("nan"))
+        self._lin_key = None
+        return res
+
+    # ---------------------------------------------------------------- read-outs
+    def nv(self, node):
+        return self.x[node - 1] if node else 0.0
+
+    def pin_v(self, key):
+        n = self.node_of.get(tuple(key))
+        if n is None or (n and n > len(self.x)):
+            return None
+        return self.nv(n)
+
+    def warnings(self):
+        out = []
+        if self.error:
+            out.append(("Error", None, self.error))
+        out += self.notes
+        x = self.x
+        if not self.error:
+            for d in self.devs:
+                try:
+                    for sev, msg in d.warn(x):
+                        out.append((sev, d.cid, msg))
+                except Exception:
+                    pass
+            for i in range(self.nn):
+                if abs(x[i]) > 1e5:
+                    out.append(("Warning", None, "Net %s has an unrealistic voltage (%s). A part may have nowhere "
+                                                 "for its current to go." % (self.node_names[i + 1], fmt_si(x[i], "V"))))
+                    break
+        return out
+
+    def export(self):
+        st = {}
+        for d in self.devs:
+            s = d.export()
+            if s is not None:
+                st[d.cid] = s
+        st["_pressed"] = list(self.pressed)
+        return st
+
+
 # --------------------------------------------------------------------------
 # Example circuits
 # --------------------------------------------------------------------------
@@ -4437,6 +6640,7 @@ def build_example(name):
                       "bends": [list(p) for p in bends], "color": color})
 
     red, black, blue, green = "#dc2626", "#1f2933", "#2563eb", "#16a34a"
+    orange, purple = "#ea580c", "#7c3aed"
     if name == "led":
         v = add("dc_source", 4, 6, "V1", "9 V")
         r = add("resistor", 9, 2, "R1", "470 Ω")
@@ -4461,6 +6665,62 @@ def build_example(name):
         wire(r2, "2", g2, "GND", black)
         wire(vm, "−", g3, "GND", black)
         wire(v, "−", g1, "GND", black)
+    elif name == "rc":
+        v = add("ac_source", 4, 6, "V1", "5 V 1 kHz")
+        r = add("resistor", 9, 4, "R1", "1 kΩ")
+        cap = add("capacitor", 14, 6, "C1", "100 nF", rot=1)
+        g1 = add("ground", 4, 10, "GND1")
+        g2 = add("ground", 14, 10, "GND2")
+        pin_ = add("probe", 7, 1, "Vin")
+        pout = add("probe", 14, 1, "Vout")
+        wire(v, "1", r, "1", red)
+        wire(r, "1", pin_, "V", orange)
+        wire(r, "2", cap, "1", blue)
+        wire(cap, "1", pout, "V", purple)
+        wire(cap, "2", g2, "GND", black)
+        wire(v, "2", g1, "GND", black)
+    elif name == "transistor":
+        p1 = add("vcc", 4, 2, "PWR1", "+5 V")
+        sw = add("pushbutton", 4, 6, "SW1", rot=1)
+        rb = add("resistor", 8, 8, "R1", "10 kΩ")
+        q = add("npn", 13, 8, "Q1")
+        p2 = add("vcc", 14, -7, "PWR2", "+5 V")
+        rc = add("resistor", 14, -2, "R2", "330 Ω", rot=1)
+        d = add("led", 14, 3, "D1", "Green", rot=1)
+        g = add("ground", 14, 12, "GND1")
+        wire(p1, "V", sw, "1", red)
+        wire(sw, "2", rb, "1", blue)
+        wire(rb, "2", q, "B", blue)
+        wire(p2, "V", rc, "1", red)
+        wire(rc, "2", d, "A", orange)
+        wire(d, "K", q, "C", green)
+        wire(q, "E", g, "GND", black)
+    elif name == "blinker":
+        u = add("timer555", 14, 9, "U1")
+        p1 = add("vcc", 13, 2, "PWR1", "+9 V")
+        p2 = add("vcc", 15, 2, "PWR2", "+9 V")
+        p3 = add("vcc", 7, 3, "PWR3", "+9 V")
+        ra = add("resistor", 7, 8, "R1", "10 kΩ", rot=1)
+        rb = add("resistor", 7, 13, "R2", "68 kΩ", rot=1)
+        ct = add("capacitor_pol", 7, 18, "C1", "10 µF", rot=1)
+        g1 = add("ground", 7, 22, "GND1")
+        g2 = add("ground", 14, 15, "GND2")
+        r3 = add("resistor", 21, 8, "R3", "470 Ω")
+        d = add("led", 25, 10, "D1", "Red", rot=1)
+        g3 = add("ground", 25, 14, "GND3")
+        wire(p1, "V", u, "VCC", red)
+        wire(p2, "V", u, "RESET", red)
+        wire(p3, "V", ra, "1", red)
+        wire(ra, "2", u, "DISCH", blue)
+        wire(ra, "2", rb, "1", blue)
+        wire(rb, "2", ct, "+", green)
+        wire(ct, "+", u, "THRES", green, bends=[(9, 16)])
+        wire(u, "TRIG", u, "THRES", green, bends=[(9, 7)])
+        wire(ct, "−", g1, "GND", black)
+        wire(u, "GND", g2, "GND", black)
+        wire(u, "OUT", r3, "1", orange)
+        wire(r3, "2", d, "A", orange)
+        wire(d, "K", g3, "GND", black)
     else:  # blink
         u = add("arduino_uno", 6, 10, "U1", "")
         r = add("resistor", 15, 17, "R1", "220 Ω")
@@ -4481,7 +6741,7 @@ def _esc(s):
     return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;"))
 
 
-def canvas_to_svg(cv, skip_tags=("grid", "hint", "overlay")):
+def canvas_to_svg(cv, skip_tags=("grid", "hint", "overlay", "sim")):
     items = [i for i in cv.find_all() if not set(cv.gettags(i)) & set(skip_tags)]
     if not items:
         return None
@@ -4616,7 +6876,6 @@ def _app_show_help(self):
     win.title("Quick start — " + APP_NAME)
     win.configure(bg=C["panel"])
     win.transient(self.root)
-    s = self.ui_scale
     f = ttk.Frame(win, style="Panel.TFrame", padding=18)
     f.pack(fill="both", expand=True)
     ttk.Label(f, text="Quick start", style="Title.TLabel").pack(anchor="w")
@@ -4631,10 +6890,17 @@ def _app_show_help(self):
         "7.  Make your own parts with  + New Component : give it a name, list its pins and\n"
         "     choose which side each pin is on. It’s saved in your library for next time.\n"
         "8.  Give a part a picture (a photo of the real module, say): click the part, then\n"
-        "     Add picture… on the right, or use Picture › Choose… in the Component Editor.\n\n"
+        "     Add picture… on the right, or use Picture › Choose… in the Component Editor.\n"
+        "9.  Press  ▶ Simulate  (F5) to run the circuit. Voltages appear on the wires, LEDs and lamps\n"
+        "     light up and meters show readings. Click switches, hold push buttons, hover over a part\n"
+        "     for its voltage and current, and right-click a wire or part to plot it on the oscilloscope.\n"
+        "     Simulate › Frequency response draws a Bode plot of a filter or amplifier.\n\n"
         "Good to know\n"
         "•  All Ground symbols are connected together, and so are Power Rails with the same value.\n"
         "•  A filled pin is connected; a hollow pin is still free.\n"
+        "•  Parts marked as a microcontroller (like the Arduino Uno) can have unused pins: Check circuit\n"
+        "    only makes sure their power and ground are wired. Tick the box in a part’s properties, or in\n"
+        "    the Component Editor for your own boards.\n"
         "•  Files are saved as .circuit and include any custom parts they use (with their pictures),\n"
         "    so you can share them.\n"
         "•  File › Export image saves an SVG you can put in a lab report.")
@@ -4650,12 +6916,1311 @@ def _app_show_help(self):
 
 def _app_show_about(self):
     messagebox.showinfo("About " + APP_NAME,
-                        "%s %s\n\nA simple circuit and wiring editor for students.\n\n"
+                        "%s %s\n\nA simple circuit and wiring editor for students, with a built-in "
+                        "circuit simulator.\n\n"
                         "Your custom components are stored in:\n%s" % (APP_NAME, APP_VERSION, self.library.path))
 
 
 App.show_help = _app_show_help
 App.show_about = _app_show_about
+
+
+# --------------------------------------------------------------------------
+# Simulation user interface
+# --------------------------------------------------------------------------
+SPEEDS = [("Auto", None), ("10× faster", 10.0), ("Real time", 1.0), ("10× slower", 0.1),
+          ("100× slower", 1e-2), ("1 000× slower", 1e-3), ("10 000× slower", 1e-4),
+          ("100 000× slower", 1e-5), ("1 000 000× slower", 1e-6)]
+
+
+def speed_name(ts):
+    if abs(ts - 1.0) < 1e-9:
+        return "real time"
+    if ts > 1.0:
+        return "%.3g× faster" % ts
+    k = 1.0 / ts
+    return ("{:,.0f}".format(k) if k >= 10 else "%.2g" % k).replace(",", " ") + "× slower"
+
+
+TRACE_COLORS = ["#2563eb", "#dc2626", "#16a34a", "#d97706", "#7c3aed", "#0891b2", "#db2777", "#4b5563"]
+CONTROL_MODELS = ("switch", "pushbutton", "potentiometer", "ldr", "tmp36")
+
+SIM_HELP = (
+    "Circuit Builder solves your circuit the way SPICE does (nodal analysis), many times a second, "
+    "so you see voltages and currents change as the circuit runs.\n\n"
+    "Simulated parts\n"
+    "Resistors, potentiometers (set the wiper in the part’s panel), LDRs (set the light level), fuses, "
+    "capacitors and electrolytic capacitors, inductors, batteries (with a small internal resistance), "
+    "DC, AC and square-wave sources, current sources, power rails, voltmeters, ammeters, voltage probes, "
+    "switches and push buttons, lamps, motors, buzzers, diodes, Zener diodes, LEDs (the value sets the "
+    "color), NPN and PNP transistors, N-MOSFETs, op-amps, logic gates (5 V logic), the 555 timer, the 7805 "
+    "regulator, the TMP36 temperature sensor (set the temperature) and the relay module.\n\n"
+    "Not simulated\n"
+    "Microcontroller boards (Arduino, Pico), digital modules (LCD, ultrasonic sensor, servo), generic ICs and "
+    "parts you make yourself. Their pins are left unconnected. A copy of a simulated part (for example one "
+    "you gave a picture) still simulates as long as its pin names stay the same.\n\n"
+    "Values\n"
+    "Each part’s Value box is read: 4.7 kΩ, 100 nF, 10 µF, 1 mH, 9 V, 1 mA, 10 V 60 Hz (peak), "
+    "120 V rms 60 Hz, 5 V 1 kHz (square wave), 6 V 1 W (lamp), 6 V 0.2 A (motor), 5.1 V (Zener), "
+    "Red / Green / Blue (LED), hFE=200 (transistor gain).\n\n"
+    "Models are simplified for learning\n"
+    "Transistors use typical values (gain about 150), op-amps have a gain of 200 000 and outputs that stop "
+    "about 1.5 V short of their supply rails, logic gates switch at 2.5 V and output 0 V or 5 V. Real parts "
+    "vary, so expect small differences from a lab measurement.\n\n"
+    "While it runs\n"
+    "Hover over a part for its voltage, current and power; click it for full readings. Click switches, hold "
+    "push buttons and drag sliders. You can keep editing: the simulation updates as you change the circuit. "
+    "Right-click a wire or part to plot it on the oscilloscope.\n\n"
+    "Frequency response\n"
+    "Simulate › Frequency response feeds a small sine wave into the chosen source and plots the gain and "
+    "phase at the chosen point over a range of frequencies (a Bode plot). It also finds the −3 dB cutoff "
+    "of filters.")
+
+
+def _nice_ticks(lo, hi, n=5):
+    if not (hi > lo):
+        lo, hi = lo - 1.0, hi + 1.0
+    raw = (hi - lo) / float(n)
+    mag = 10 ** math.floor(math.log10(raw))
+    step = mag
+    for m in (1, 2, 2.5, 5, 10):
+        step = m * mag
+        if step >= raw * 0.999:
+            break
+    a = math.floor(lo / step + 1e-9) * step
+    b = math.ceil(hi / step - 1e-9) * step
+    ticks = []
+    k = 0
+    while k < 60:
+        v = a + k * step
+        if v > b + step * 1e-6:
+            break
+        ticks.append(0.0 if abs(v) < step * 1e-9 else v)
+        k += 1
+    return a, b, ticks
+
+
+class _SimUI:
+    """Simulation methods of App (copied onto App below)."""
+
+    # ---------------------------------------------------------------- tool bar
+    def _build_simbar(self):
+        bg = C["sim_bg"]
+        bar = tk.Frame(self.root, bg=bg)
+        self.simbar = bar
+        inner = tk.Frame(bar, bg=bg)
+        inner.pack(fill="x", padx=10, pady=4)
+        self.sim_dot = tk.Label(inner, text="●", bg=bg, fg=C["ok"], font=(self.fam, 11, "bold"))
+        self.sim_dot.pack(side="left")
+        self.sim_state_var = tk.StringVar(value="Running")
+        tk.Label(inner, textvariable=self.sim_state_var, bg=bg, fg=C["text"], font=self.f_bold).pack(side="left", padx=(3, 12))
+        self.b_sim_pause = ttk.Button(inner, text="Pause", style="SimBar.TButton", command=self.sim_pause, takefocus=False)
+        self.b_sim_pause.pack(side="left")
+        b = ttk.Button(inner, text="Restart", style="SimBar.TButton", command=self.sim_restart, takefocus=False)
+        b.pack(side="left", padx=4)
+        Tooltip(b, "Start again from time zero (capacitors empty, fuses replaced)")
+        tk.Frame(inner, width=1, bg=C["sim_border"]).pack(side="left", fill="y", padx=10, pady=2)
+        tk.Label(inner, text="Speed", bg=bg, fg=C["muted"]).pack(side="left")
+        self.v_speed = tk.StringVar(value=SPEEDS[0][0])
+        cb = ttk.Combobox(inner, textvariable=self.v_speed, values=[n for n, _ in SPEEDS], state="readonly",
+                          width=15, takefocus=False)
+        cb.pack(side="left", padx=(5, 10))
+        cb.bind("<<ComboboxSelected>>", lambda e: (self.cv.focus_set(), self._sim_status()))
+        Tooltip(cb, "How fast circuit time runs compared with real time.\nAuto picks a speed that suits the circuit.")
+        self.sim_time_var = tk.StringVar(value="")
+        tk.Label(inner, textvariable=self.sim_time_var, bg=bg, fg=C["text"], width=25, anchor="w").pack(side="left")
+        tk.Frame(inner, width=1, bg=C["sim_border"]).pack(side="left", fill="y", padx=10, pady=2)
+        b = ttk.Button(inner, text="Oscilloscope", style="SimBar.TButton", command=self.open_scope, takefocus=False)
+        b.pack(side="left")
+        Tooltip(b, "Plot voltages and currents over time")
+        b = ttk.Button(inner, text="Frequency response", style="SimBar.TButton", command=self.open_freq, takefocus=False)
+        b.pack(side="left", padx=4)
+        Tooltip(b, "Bode plot: gain and phase against frequency")
+        self.sim_msg_var = tk.StringVar()
+        self.sim_msg = tk.Label(inner, textvariable=self.sim_msg_var, bg=bg, fg=C["muted"], anchor="e", cursor="hand2")
+        self.sim_msg.pack(side="right", fill="x", expand=True, padx=(10, 0))
+        self.sim_msg.bind("<Button-1>", lambda e: self._show_messages())
+        tk.Frame(bar, height=1, bg=C["sim_border"]).pack(side="bottom", fill="x")
+
+    def _show_messages(self):
+        self.sel = set()
+        self.selection_changed()
+
+    # ---------------------------------------------------------------- start / stop
+    def sim_toggle(self):
+        if self.sim is None:
+            self.sim_start()
+        else:
+            self.sim_stop()
+
+    def _make_sim(self, carry=None, t=0.0):
+        sim = Sim(self, carry=carry, t=t)
+        sim.on_sample = self._scope_sample
+        return sim
+
+    def sim_start(self):
+        self.commit_props()
+        if self.mode != "idle":
+            self.cancel_mode()
+        if not self.comps:
+            self.flash("Add some parts first, then press ▶ Simulate.")
+            return
+        self.sim = self._make_sim()
+        self.sim_paused = False
+        self.b_sim.configure(text="■  Stop", style="Stop.TButton")
+        self.b_sim_pause.configure(text="Pause")
+        self.simbar.pack(side="top", fill="x", after=self._tb_line)
+        self._sim_last = time.perf_counter()
+        self._sim_warn_sig = None
+        self._last_sample = -1.0
+        for tr in self.scope_traces:
+            tr["data"] = []
+        if self._sim_job is None:
+            self._sim_job = self.root.after(10, self._sim_tick)
+        self.request_redraw()
+        self.refresh_props()
+        self.set_status_hint()
+        self._sim_status()
+
+    def sim_stop(self):
+        if self.sim is None:
+            return
+        self.sim = None
+        if self._sim_job is not None:
+            try:
+                self.root.after_cancel(self._sim_job)
+            except tk.TclError:
+                pass
+            self._sim_job = None
+        self.simbar.pack_forget()
+        self.b_sim.configure(text="▶  Simulate", style="Sim.TButton")
+        self.sim_hover = None
+        self._sim_pb = None
+        self.cv.delete("sim")
+        self.request_redraw()
+        self.refresh_props()
+        self.set_status_hint()
+        if self.scope_win is not None:
+            self.scope_win.redraw(True)
+
+    def sim_restart(self):
+        if self.sim is None:
+            self.sim_start()
+            return
+        self.sim = self._make_sim()
+        self._last_sample = -1.0
+        for tr in self.scope_traces:
+            tr["data"] = []
+        self._sim_last = time.perf_counter()
+        self._sim_warn_sig = None
+        self.request_redraw()
+        self.refresh_props()
+        self._sim_status()
+
+    def sim_pause(self):
+        if self.sim is None:
+            return
+        self.sim_paused = not self.sim_paused
+        txt = "Resume" if self.sim_paused else "Pause"
+        self.b_sim_pause.configure(text=txt)
+        if self.scope_win is not None:
+            self.scope_win.b_pause.configure(text=txt)
+        self._sim_last = time.perf_counter()
+        self._sim_status()
+
+    def _sim_rebuild(self):
+        old = self.sim
+        new = self._make_sim(carry=old.export(), t=old.t)
+        self.sim = new
+        self._sim_warn_sig = None
+        self.sim_hover = self.sim_hover if self.sim_hover in self.comps else None
+
+    def sim_timescale(self):
+        v = dict(SPEEDS).get(self.v_speed.get())
+        if v is None:
+            return self.sim.auto_speed if self.sim is not None else 1.0
+        return v
+
+    # ---------------------------------------------------------------- the loop
+    def _sim_tick(self):
+        self._sim_job = None
+        sim = self.sim
+        if sim is None:
+            return
+        now = time.perf_counter()
+        dt = min(0.1, max(0.0, now - self._sim_last))
+        self._sim_last = now
+        if not self.sim_paused:
+            sim.advance(dt * self.sim_timescale(), budget=0.025)
+        elif sim.static and sim.dirty:
+            sim.advance(0.0)
+        self._sim_draw()
+        if self.sim_hover is not None or self.hover_pin is not None:
+            self.draw_overlay()
+        self._sim_ui_t += dt
+        if self._sim_ui_t >= 0.2:
+            self._sim_ui_t = 0.0
+            self._sim_status()
+            self._sim_update_props()
+        if self.scope_win is not None:
+            self.scope_win.redraw()
+        self._sim_job = self.root.after(30, self._sim_tick)
+
+    def _sim_status(self):
+        sim = self.sim
+        if sim is None:
+            return
+        auto = dict(SPEEDS).get(self.v_speed.get()) is None
+        self.sim_time_var.set("t = %s%s" % (fmt_si(sim.t, "s"),
+                                            "    (auto: %s)" % speed_name(self.sim_timescale()) if auto else ""))
+        if sim.error:
+            state, col = "Stopped: problem found", C["danger"]
+        elif self.sim_paused:
+            state, col = "Paused", C["warn"]
+        elif sim.slow:
+            state, col = "Running (slower than the chosen speed)", C["warn"]
+        else:
+            state, col = "Running", C["ok"]
+        self.sim_state_var.set(state)
+        self.sim_dot.configure(fg=col)
+        warns = sim.warnings()
+        errs = [w for w in warns if w[0] == "Error"]
+        wn = [w for w in warns if w[0] == "Warning"]
+        if errs:
+            first = re.split(r":|\. ", errs[0][2], 1)[0].rstrip(".")
+            msg, mcol = "⚠ %s (click for details)" % first, C["danger"]
+        elif wn:
+            msg, mcol = "%d warning%s (click to see)" % (len(wn), "" if len(wn) == 1 else "s"), C["warn"]
+        elif warns:
+            msg, mcol = "%d note%s (click to see)" % (len(warns), "" if len(warns) == 1 else "s"), C["muted"]
+        else:
+            msg, mcol = "✓ No problems", C["ok"]
+        if len(msg) > 110:
+            msg = msg[:107].rstrip() + "…"
+        self.sim_msg_var.set(msg)
+        self.sim_msg.configure(fg=mcol)
+        sig = tuple((w[0], w[2]) for w in warns)
+        if sig != self._sim_warn_sig:
+            self._sim_warn_sig = sig
+            if not self.sel and self.mode == "idle":
+                self.refresh_props()
+
+    # ---------------------------------------------------------------- drawing
+    def _sim_draw(self):
+        cv = self.cv
+        cv.delete("sim")
+        sim = self.sim
+        if sim is None or not sim.N or sim.error:
+            return
+        z = self.zoom
+        s = G * z
+        x = sim.x
+        fpx = max(8, int(round(10 * z)))
+        fontb = (self.fam, -fpx, "bold")
+        below = "wire" if cv.find_withtag("wire") else "comp"
+        now = time.perf_counter()
+        for cid, d in sim.by_cid.items():
+            c = self.comps.get(cid)
+            if c is None:
+                continue
+            try:
+                v = d.view(x)
+            except Exception:
+                v = None
+            if not v:
+                continue
+            rd = self.rdef(c)
+            bx0, by0, bx1, by1 = rd.body_bbox
+            X, Y = self.T(*local_to_world(c, rd, (bx0 + bx1) / 2.0, (by0 + by1) / 2.0))
+            glow = v.get("glow")
+            if glow and glow[1] > 0.02:
+                col, k = glow
+                r = s * (0.8 + 0.6 * k)
+                own = cv.find_withtag("c:" + cid) if ("c", cid) in self.sel else ()
+                rings = [(1.0, 0.2 + 0.35 * k), (0.6, 0.4 + 0.55 * k)]
+                for frac, t in (reversed(rings) if own else rings):
+                    o = cv.create_oval(X - r * frac, Y - r * frac, X + r * frac, Y + r * frac,
+                                       fill=_mix(C["canvas"], col, t), outline="", tags="sim")
+                    if own:   # selected: sit just above the selection highlight, under the symbol
+                        cv.tag_raise(o, own[0])
+                    else:
+                        cv.tag_lower(o, below)
+            sp = v.get("spin")
+            if sp is not None and abs(sp) > 0.02:
+                a = (self._spin.get(cid, 0.0) + 40.0 * max(-2.0, min(2.0, sp))) % 360.0
+                self._spin[cid] = a
+                R = s * 0.95
+                cv.create_arc(X - R, Y - R, X + R, Y + R, start=a, extent=100 if sp > 0 else -100, style="arc",
+                              outline=C["accent"], width=max(2.0, 2.5 * z), tags="sim")
+            cross = v.get("cross")
+            if cross:
+                p = [self.T(*local_to_world(c, rd, px, py)) for px, py in ((bx0, by0), (bx1, by1), (bx0, by1), (bx1, by0))]
+                cv.create_line(p[0][0], p[0][1], p[1][0], p[1][1], fill=cross, width=max(2.0, 2.5 * z), tags="sim")
+                cv.create_line(p[2][0], p[2][1], p[3][0], p[3][1], fill=cross, width=max(2.0, 2.5 * z), tags="sim")
+            if v.get("sound") and int(now * 4) % 2 == 0:
+                cv.create_text(X + s * 1.1, Y - s * 1.0, text="♪", fill=C["accent"],
+                               font=(self.fam, -max(10, int(17 * z)), "bold"), tags="sim")
+            rdg = v.get("reading")
+            if rdg:
+                bx = self.comp_bbox(c)
+                if c.get("rot", 0) % 2 or sim_model_of(self.library, c) == "probe":
+                    px, py, anc = bx[2] + 0.3, (bx[1] + bx[3]) / 2.0, "w"
+                    if sim_model_of(self.library, c) == "probe":
+                        py = bx[1] + 0.8
+                else:
+                    px, py, anc = (bx[0] + bx[2]) / 2.0, bx[3] + 0.3, "n"
+                PX, PY = self.T(px, py)
+                t = cv.create_text(PX, PY, text=rdg, anchor=anc, fill=C["meter_fg"], font=fontb, tags="sim")
+                b = cv.bbox(t)
+                if b:
+                    rr = cv.create_rectangle(b[0] - 5, b[1] - 2, b[2] + 5, b[3] + 2, fill=C["meter_bg"],
+                                             outline="", tags="sim")
+                    cv.tag_lower(rr, t)
+        if self.show_volts and z >= 0.45 * self.ui_scale:
+            fs = (self.fam, -max(8, int(round(9.5 * z))))
+            for net in self.compute_nets():
+                node = sim.node_of.get(tuple(net["pins"][0]))
+                if node is None or node == 0:
+                    continue
+                volt = sim.nv(node)
+                best, blen = None, -1.0
+                for wid in net["wires"]:
+                    w = self.wires.get(wid)
+                    if not w:
+                        continue
+                    try:
+                        pts, _ = self.wire_route(w)
+                    except (KeyError, IndexError):
+                        continue
+                    for i in range(len(pts) - 1):
+                        (ax, ay), (bx_, by_) = pts[i], pts[i + 1]
+                        ln = abs(bx_ - ax) + abs(by_ - ay)
+                        if ln > blen:
+                            blen, best = ln, ((ax + bx_) / 2.0, (ay + by_) / 2.0, abs(by_ - ay) < 1e-9)
+                if best is None:
+                    continue
+                PX, PY = self.T(best[0], best[1])
+                col = "#b91c1c" if volt > 0.05 else "#1d4ed8" if volt < -0.05 else C["muted"]
+                if best[2]:
+                    t = cv.create_text(PX, PY - 5, text=fmt_si(volt, "V"), anchor="s", fill=col, font=fs, tags="sim")
+                else:
+                    t = cv.create_text(PX + 6, PY, text=fmt_si(volt, "V"), anchor="w", fill=col, font=fs, tags="sim")
+                b = cv.bbox(t)
+                if b:
+                    rr = cv.create_rectangle(b[0] - 3, b[1] - 1, b[2] + 3, b[3] + 1, fill="white",
+                                             outline=_mix("#ffffff", col, 0.35), tags="sim")
+                    cv.tag_lower(rr, t)
+        cv.tag_raise("overlay")
+
+    def _sim_tip(self, cid):
+        cv = self.cv
+        sim = self.sim
+        c = self.comps[cid]
+        rd = self.rdef(c)
+        d = sim.by_cid.get(cid)
+        lines = ["%s  ·  %s" % (c.get("label") or rd.name, rd.name)]
+        if d is None:
+            lines.append("Not simulated")
+        else:
+            try:
+                lines += ["%s:  %s" % (a, b) for a, b in d.info(sim.x)]
+            except Exception:
+                pass
+        mx, my = self._mouse
+        t = cv.create_text(mx + 16, my + 18, text="\n".join(lines), anchor="nw", fill="white",
+                           font=(self.fam, -int(11 * self.ui_scale)), tags="overlay")
+        b = cv.bbox(t)
+        if b:
+            dx = min(0, cv.winfo_width() - 8 - b[2])
+            dy = min(0, cv.winfo_height() - 8 - b[3])
+            if dx or dy:
+                cv.move(t, dx, dy)
+                b = cv.bbox(t)
+            r = cv.create_rectangle(b[0] - 8, b[1] - 6, b[2] + 8, b[3] + 6, fill="#1f2933", outline="", tags="overlay")
+            cv.tag_lower(r, t)
+
+    # ---------------------------------------------------------------- interaction
+    def _sim_press(self, cid):
+        if self.sim is None:
+            return
+        sym = self.rdef(self.comps[cid]).symbol
+        if sym == "pushbutton":
+            self.sim.pressed.add(cid)
+            self.sim.bump()
+            self._sim_pb = cid
+            self.request_redraw()
+        elif sym == "switch":
+            self._sim_click = cid
+
+    def toggle_switch(self, cid):
+        c = self.comps.get(cid)
+        if c is None:
+            return
+        self.set_switch(cid, not c.get("closed"))
+        if self.sel == {("c", cid)}:
+            self.refresh_props()
+
+    def set_switch(self, cid, closed):
+        c = self.comps.get(cid)
+        if c is None:
+            return
+        c["closed"] = bool(closed)
+        self.dirty = True
+        self.update_title()
+        if self.sim is not None:
+            self.sim.bump()
+        self.request_redraw()
+        self.flash("%s is now %s." % (c.get("label") or "The switch", "closed (on)" if closed else "open (off)"))
+
+    def set_sim_param(self, cid, key, val):
+        c = self.comps.get(cid)
+        if c is None:
+            return
+        c[key] = val
+        self.dirty = True
+        self.update_title()
+        if self.sim is not None:
+            self.sim.bump()
+
+    # ---------------------------------------------------------------- properties panel
+    def _props_sim_readings(self, cid, c, rd, r):
+        f = self.props
+        wl = self.props_width - 40
+        self._head("Live readings", r)
+        r += 1
+        sim = self.sim
+        d = sim.by_cid.get(cid)
+        box = tk.Frame(f, bg=C["sim_bg"], highlightthickness=1, highlightbackground=C["sim_border"], padx=8, pady=6)
+        box.grid(row=r, column=0, columnspan=2, sticky="ew")
+        box.columnconfigure(1, weight=1)
+        r += 1
+        readings = []
+        if d is None:
+            tk.Label(box, text="This part isn’t simulated, so its pins are left unconnected.",
+                     bg=C["sim_bg"], fg=C["muted"], wraplength=wl, justify="left").grid(row=0, column=0, sticky="w")
+        else:
+            try:
+                info = d.info(sim.x)
+            except Exception:
+                info = []
+            for i, (name, txt) in enumerate(info):
+                tk.Label(box, text=name, bg=C["sim_bg"], fg=C["muted"]).grid(row=i, column=0, sticky="w", padx=(0, 8))
+                v = tk.StringVar(value=txt)
+                readings.append(v)
+                tk.Label(box, textvariable=v, bg=C["sim_bg"], fg=C["text"], font=self.f_bold).grid(row=i, column=1, sticky="w")
+            model = sim_model_of(self.library, c)
+            lab = c.get("label") or rd.name
+            bf = ttk.Frame(f, style="Panel.TFrame")
+            bf.grid(row=r, column=0, columnspan=2, sticky="w", pady=(6, 0))
+            r += 1
+            if model == "probe" or len(rd.pins) == 1:
+                ttk.Button(bf, text="Plot voltage", command=lambda: self.plot_trace(
+                    "pin", [cid, 0], lab if model == "probe" else "V(%s)" % lab)).pack(side="left")
+            elif len(rd.pins) == 2:
+                ttk.Button(bf, text="Plot voltage", command=lambda: self.plot_trace("v", cid, "V(%s)" % lab)).pack(side="left")
+                ttk.Button(bf, text="Plot current", command=lambda: self.plot_trace("i", cid, "I(%s)" % lab)).pack(side="left", padx=4)
+            else:
+                ttk.Label(bf, text="Double-click a pin below to plot its voltage.", style="Hint.TLabel").pack(side="left")
+        self.sim_vars = {"cid": cid, "readings": readings, "tree": None}
+        return r
+
+    def _slider(self, parent, row, title, cid, key, lo, hi, default, fmt):
+        c = self.comps[cid]
+        val = float(c.get(key, default))
+        lab = tk.StringVar(value=fmt(val))
+        ttk.Label(parent, text=title, style="Panel.TLabel").grid(row=row, column=0, sticky="w")
+        ttk.Label(parent, textvariable=lab, style="Card.TLabel").grid(row=row, column=1, sticky="e")
+        sv = tk.DoubleVar(value=val)
+
+        def moved(_v=None):
+            v = sv.get()
+            lab.set(fmt(v))
+            self.set_sim_param(cid, key, round(v, 4))
+        ttk.Scale(parent, from_=lo, to=hi, variable=sv, command=moved, style="Panel.Horizontal.TScale").grid(
+            row=row + 1, column=0, columnspan=2, sticky="ew", pady=(2, 0))
+
+    def _props_sim_controls(self, cid, c, rd, r):
+        model = sim_model_of(self.library, c)
+        if model not in CONTROL_MODELS:
+            return r
+        f = self.props
+        wl = self.props_width - 30
+        self._head("Controls", r)
+        r += 1
+        fr = ttk.Frame(f, style="Panel.TFrame")
+        fr.grid(row=r, column=0, columnspan=2, sticky="ew")
+        fr.columnconfigure(0, weight=1)
+        r += 1
+        if model == "switch":
+            v = tk.BooleanVar(value=bool(c.get("closed")))
+            ttk.Checkbutton(fr, text="Closed (switched on)", variable=v, style="Card.TCheckbutton",
+                            command=lambda: self.set_switch(cid, v.get())).grid(row=0, column=0, sticky="w")
+            ttk.Label(fr, text="While simulating you can also just click the switch.", style="Hint.TLabel",
+                      wraplength=wl).grid(row=1, column=0, sticky="w")
+        elif model == "pushbutton":
+            ttk.Label(fr, text="While simulating, hold the mouse button down on it to press it.", style="Hint.TLabel",
+                      wraplength=wl, justify="left").grid(row=0, column=0, sticky="w")
+        elif model == "potentiometer":
+            self._slider(fr, 0, "Wiper position", cid, "wiper", 0.0, 1.0, 0.5,
+                         lambda v: "%d %% from pin 1" % round(v * 100))
+        elif model == "ldr":
+            self._slider(fr, 0, "Light level", cid, "light", 0.0, 100.0, 50.0, lambda v: "%d %%" % round(v))
+        elif model == "tmp36":
+            self._slider(fr, 0, "Temperature", cid, "temp", -40.0, 125.0, 25.0, lambda v: "%d °C" % round(v))
+        return r
+
+    def _props_sim_summary(self):
+        f = self.props
+        wl = self.props_width - 30
+        sim = self.sim
+        ttk.Label(f, text="Simulation", style="Title.TLabel").grid(row=0, column=0, sticky="w")
+        state = "Problem found" if sim.error else ("Paused" if self.sim_paused else "Running")
+        kind = "a DC circuit (nothing changes over time)" if sim.static else "changes over time"
+        ttk.Label(f, text="%s  ·  %s" % (state, kind), style="Muted.TLabel", wraplength=wl).grid(row=1, column=0, sticky="w")
+        warns = sim.warnings()
+        self._head("Messages (%d)" % len(warns) if warns else "Messages", 2)
+        mf = tk.Frame(f, bg=C["panel"])
+        mf.grid(row=3, column=0, sticky="ew")
+        colors = {"Error": C["danger"], "Warning": C["warn"], "Info": C["muted"]}
+        if not warns:
+            tk.Label(mf, text="✓  No problems found.", bg=C["panel"], fg=C["ok"], font=self.f_bold).pack(anchor="w")
+        for sev, cid, msg in warns[:7]:
+            row = tk.Frame(mf, bg=C["panel"])
+            row.pack(fill="x", pady=(0, 7), anchor="w")
+            tk.Label(row, text={"Info": "NOTE"}.get(sev, sev.upper()), bg=C["panel"], fg=colors.get(sev, C["muted"]),
+                     font=(self.fam, 7, "bold")).pack(anchor="w")
+            lbl = tk.Label(row, text=msg, bg=C["panel"], fg=C["text"], wraplength=wl, justify="left", anchor="w")
+            lbl.pack(anchor="w", fill="x")
+            if cid in self.comps:
+                lbl.configure(cursor="hand2")
+                lbl.bind("<Button-1>", lambda e, c=cid: self._select_comp(c))
+        if len(warns) > 7:
+            tk.Label(mf, text="+ %d more" % (len(warns) - 7), bg=C["panel"], fg=C["muted"]).pack(anchor="w")
+        self._head("While it runs", 4)
+        tips = ["Hover over a part to see its voltage, current and power.",
+                "Click a switch to flip it; hold a push button down to press it.",
+                "Click a part for full readings and controls (sliders for pots, LDRs and sensors).",
+                "Right-click a wire or part to plot it on the oscilloscope.",
+                "Keep editing: the simulation updates as you change things."]
+        tf = tk.Frame(f, bg=C["panel"])
+        tf.grid(row=5, column=0, sticky="ew")
+        for t in tips:
+            tk.Label(tf, text="•  " + t, bg=C["panel"], fg=C["text"], wraplength=wl, justify="left").pack(anchor="w", pady=1)
+        ttk.Button(f, text="What gets simulated?", command=self.show_sim_help).grid(row=6, column=0, sticky="w", pady=(12, 0))
+
+    def _select_comp(self, cid):
+        if cid in self.comps:
+            self.sel = {("c", cid)}
+            self.selection_changed()
+
+    def _sim_update_props(self):
+        sv = self.sim_vars
+        sim = self.sim
+        if not sv or sim is None or sv.get("cid") not in self.comps:
+            return
+        cid = sv["cid"]
+        d = sim.by_cid.get(cid)
+        x = sim.x
+        if d is not None and sv["readings"]:
+            try:
+                info = d.info(x)
+            except Exception:
+                info = []
+            if len(info) == len(sv["readings"]):
+                for var, (_n, txt) in zip(sv["readings"], info):
+                    var.set(txt)
+        tv = sv.get("tree")
+        if tv is None:
+            return
+        rd = self.rdef(self.comps[cid])
+        cur = {}
+        if d is not None:
+            try:
+                cur = dict(zip(d.pidx, d.currents(x)))
+            except Exception:
+                cur = {}
+        for i, p in enumerate(rd.pins):
+            v = sim.pin_v((cid, i)) if d is not None or (cid, i) in sim.wired else None
+            vtxt = fmt_si(v, "V") if v is not None else "—"
+            itxt = fmt_si(cur[i], "A") if i in cur else "—"
+            try:
+                tv.item(str(i), values=(p["name"], vtxt, itxt))
+            except tk.TclError:
+                return
+
+    # ---------------------------------------------------------------- oscilloscope traces
+    def _plot_menu_items(self, m, cid):
+        c = self.comps[cid]
+        rd = self.rdef(c)
+        lab = c.get("label") or rd.name
+        model = sim_model_of(self.library, c)
+        if model == "ground" or not rd.pins:
+            return
+        m.add_separator()
+        if model == "probe" or len(rd.pins) == 1:
+            m.add_command(label="Plot this voltage (oscilloscope)",
+                          command=lambda: self.plot_trace("pin", [cid, 0], lab if model == "probe" else "V(%s)" % lab))
+        elif len(rd.pins) == 2:
+            m.add_command(label="Plot voltage across (oscilloscope)", command=lambda: self.plot_trace("v", cid, "V(%s)" % lab))
+            m.add_command(label="Plot current through (oscilloscope)", command=lambda: self.plot_trace("i", cid, "I(%s)" % lab))
+        else:
+            sub = tk.Menu(m, tearoff=0)
+            for i, p in enumerate(rd.pins):
+                sub.add_command(label=p["name"], command=lambda i=i, n=p["name"]: self.plot_trace(
+                    "pin", [cid, i], "V(%s.%s)" % (lab, n)))
+            m.add_cascade(label="Plot voltage at pin (oscilloscope)", menu=sub)
+
+    def plot_net(self, wid):
+        w = self.wires.get(wid)
+        if not w:
+            return
+        net = self.pin_net_map().get(tuple(w["a"]))
+        self.plot_trace("pin", list(w["a"]), "V(%s)" % (net["name"] if net else self.pin_name(tuple(w["a"]))))
+
+    def _plot_pin_row(self, cid, tv):
+        sel = tv.focus() or (tv.selection() or [None])[0]
+        if sel is None or cid not in self.comps:
+            return
+        c = self.comps[cid]
+        rd = self.rdef(c)
+        i = int(sel)
+        self.plot_trace("pin", [cid, i], "V(%s.%s)" % (c.get("label") or rd.name, rd.pins[i]["name"]))
+
+    def _add_trace(self, kind, key, name):
+        for tr in self.scope_traces:
+            if tr["kind"] == kind and tr["key"] == key:
+                return tr
+        used = {tr["color"] for tr in self.scope_traces}
+        col = next((cc for cc in TRACE_COLORS if cc not in used), TRACE_COLORS[len(self.scope_traces) % len(TRACE_COLORS)])
+        tr = {"kind": kind, "key": key, "name": name, "color": col, "data": []}
+        self.scope_traces.append(tr)
+        return tr
+
+    def plot_trace(self, kind, key, name):
+        self._add_trace(kind, key, name)
+        self.open_scope()
+        if self.scope_win is not None:
+            self.scope_win.build_legend()
+            self.scope_win.redraw(True)
+
+    def _default_traces(self):
+        for cid, c in self.comps.items():
+            model = sim_model_of(self.library, c)
+            lab = c.get("label") or "?"
+            if model == "probe" and (cid, 0) in self.connected_pins():
+                self._add_trace("pin", [cid, 0], lab)
+            elif model == "voltmeter":
+                self._add_trace("v", cid, "V(%s)" % lab)
+            elif model == "ammeter":
+                self._add_trace("i", cid, "I(%s)" % lab)
+        if not self.scope_traces:
+            for net in self.compute_nets():
+                if net["name"] != "GND" and len(self.scope_traces) < 3:
+                    self._add_trace("pin", list(net["pins"][0]), "V(%s)" % net["name"])
+
+    def open_scope(self):
+        if self.sim is None:
+            self.sim_start()
+        if self.scope_win is not None:
+            try:
+                self.scope_win.deiconify()
+                self.scope_win.lift()
+                return
+            except tk.TclError:
+                self.scope_win = None
+        if not self.scope_traces:
+            self._default_traces()
+        self.scope_win = ScopeWindow(self)
+
+    def open_freq(self):
+        if self.freq_win is not None:
+            try:
+                self.freq_win.deiconify()
+                self.freq_win.lift()
+                self.freq_win.refresh_lists()
+                return
+            except tk.TclError:
+                self.freq_win = None
+        self.freq_win = FreqWindow(self)
+
+    def scope_window_len(self):
+        if self.scope_win is not None:
+            w = self.scope_win.window_value()
+            if w:
+                return w
+        return self.sim.auto_window if self.sim is not None else 1.0
+
+    def _trace_value(self, tr):
+        sim = self.sim
+        k = tr["kind"]
+        if k == "pin":
+            return sim.pin_v(tuple(tr["key"]))
+        d = sim.by_cid.get(tr["key"])
+        if d is None or not sim.x:
+            return None
+        try:
+            if k == "v":
+                return d.vd(sim.x) if len(d.n) >= 2 else d.V(sim.x, 0)
+            if k == "i":
+                return d.currents(sim.x)[0]
+        except Exception:
+            return None
+        return None
+
+    def _scope_sample(self, t):
+        trs = self.scope_traces
+        if not trs or self.sim is None:
+            return
+        if t < self._last_sample:
+            for tr in trs:
+                tr["data"] = []
+            self._last_sample = -1.0
+        win = self.scope_window_len()
+        if t - self._last_sample < win / 700.0:
+            return
+        self._last_sample = t
+        for tr in trs:
+            v = self._trace_value(tr)
+            if v is None:
+                continue
+            data = tr["data"]
+            data.append((t, v))
+            if len(data) > 6000:
+                del data[:2000]
+            elif len(data) > 1500 and data[0][0] < t - 3 * win:
+                cut = bisect_left(data, (t - 2 * win,))
+                del data[:cut]
+
+    def _toggle_volts(self):
+        self.show_volts = self.v_volts.get()
+        self.settings["show_volts"] = self.show_volts
+        self.save_settings()
+        self.request_redraw()
+
+    def show_sim_help(self):
+        win = tk.Toplevel(self.root)
+        win.title("What gets simulated? — " + APP_NAME)
+        win.configure(bg=C["panel"])
+        win.transient(self.root)
+        f = ttk.Frame(win, style="Panel.TFrame", padding=18)
+        f.pack(fill="both", expand=True)
+        ttk.Label(f, text="What gets simulated?", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(f, text=SIM_HELP, style="Panel.TLabel", justify="left",
+                  wraplength=int(620 * self.ui_scale)).pack(anchor="w", pady=(8, 12))
+        ttk.Button(f, text="Close", command=win.destroy).pack(anchor="e")
+
+
+for _k, _v in list(_SimUI.__dict__.items()):
+    if callable(_v) and not _k.startswith("__"):
+        setattr(App, _k, _v)
+
+
+class ScopeWindow(tk.Toplevel):
+    WINDOWS = [("Auto", None), ("100 µs", 1e-4), ("1 ms", 1e-3), ("10 ms", 1e-2), ("100 ms", 0.1),
+               ("1 s", 1.0), ("10 s", 10.0), ("1 min", 60.0)]
+
+    def __init__(self, app):
+        super().__init__(app.root)
+        self.app = app
+        s = app.ui_scale
+        self.title("Oscilloscope — " + APP_NAME)
+        self.configure(bg=C["bg"])
+        self.geometry("%dx%d" % (int(800 * s), int(500 * s)))
+        self.minsize(int(480 * s), int(320 * s))
+        top = ttk.Frame(self, style="Bg.TFrame", padding=(10, 8, 10, 4))
+        top.pack(fill="x")
+        ttk.Label(top, text="Time shown", style="Status.TLabel").pack(side="left")
+        self.v_win = tk.StringVar(value="Auto")
+        cb = ttk.Combobox(top, textvariable=self.v_win, values=[n for n, _ in self.WINDOWS], state="readonly", width=8)
+        cb.pack(side="left", padx=(6, 12))
+        cb.bind("<<ComboboxSelected>>", lambda e: self.redraw(True))
+        self.b_pause = ttk.Button(top, text="Resume" if app.sim_paused else "Pause", command=app.sim_pause)
+        self.b_pause.pack(side="left")
+        ttk.Button(top, text="Clear", command=self._clear).pack(side="left", padx=4)
+        mb = ttk.Menubutton(top, text="Add trace ▾")
+        self.add_menu = tk.Menu(mb, tearoff=0, postcommand=self._fill_add_menu)
+        mb["menu"] = self.add_menu
+        mb.pack(side="left", padx=4)
+        self._subs = []
+        ttk.Button(top, text="Export CSV…", command=self._export).pack(side="right")
+        self.cv = tk.Canvas(self, bg="white", highlightthickness=1, highlightbackground=C["border"])
+        self.cv.pack(fill="both", expand=True, padx=10, pady=4)
+        self.legend = ttk.Frame(self, style="Bg.TFrame", padding=(10, 2, 10, 10))
+        self.legend.pack(fill="x")
+        self.cv.bind("<Configure>", lambda e: self.redraw(True))
+        self.protocol("WM_DELETE_WINDOW", self.close)
+        self.bind("<Escape>", lambda e: self.close())
+        self._last = 0.0
+        self.val_vars = []
+        self.build_legend()
+
+    def close(self):
+        self.app.scope_win = None
+        self.destroy()
+
+    def window_value(self):
+        return dict(self.WINDOWS).get(self.v_win.get())
+
+    def _clear(self):
+        for tr in self.app.scope_traces:
+            tr["data"] = []
+        self.redraw(True)
+
+    def _fill_add_menu(self):
+        app = self.app
+        m = self.add_menu
+        m.delete(0, "end")
+        for sub in self._subs:
+            sub.destroy()
+        self._subs = []
+        nets = [n for n in app.compute_nets() if n["name"] != "GND"]
+        sub = tk.Menu(m, tearoff=0)
+        self._subs.append(sub)
+        for n in nets:
+            sub.add_command(label="%s   (%s)" % (n["name"], ", ".join(app.pin_name(k) for k in n["pins"][:3])),
+                            command=lambda n=n: app.plot_trace("pin", list(n["pins"][0]), "V(%s)" % n["name"]))
+        m.add_cascade(label="Voltage of a net", menu=sub)
+        twos = [(cid, c) for cid, c in app.comps.items()
+                if len(app.rdef(c).pins) == 2 and app.sim is not None and cid in app.sim.by_cid]
+        for title, kind, pre in (("Voltage across a part", "v", "V"), ("Current through a part", "i", "I")):
+            sub = tk.Menu(m, tearoff=0)
+            self._subs.append(sub)
+            for cid, c in twos:
+                lab = c.get("label") or "?"
+                sub.add_command(label="%s  (%s)" % (lab, app.rdef(c).name),
+                                command=lambda cid=cid, lab=lab, kind=kind, pre=pre:
+                                app.plot_trace(kind, cid, "%s(%s)" % (pre, lab)))
+            m.add_cascade(label=title, menu=sub)
+
+    def build_legend(self):
+        for w in self.legend.winfo_children():
+            w.destroy()
+        self.val_vars = []
+        trs = self.app.scope_traces
+        if not trs:
+            ttk.Label(self.legend, text="No traces yet. Right-click a wire or a part on the circuit and choose "
+                                        "“Plot…”, or use Add trace.", style="Status.TLabel").pack(anchor="w")
+            return
+        for i, tr in enumerate(trs):
+            row = tk.Frame(self.legend, bg=C["bg"])
+            row.grid(row=i // 3, column=i % 3, sticky="w", padx=(0, 18), pady=2)
+            tk.Frame(row, width=16, height=4, bg=tr["color"]).pack(side="left", padx=(0, 6))
+            tk.Label(row, text=tr["name"], bg=C["bg"], fg=C["text"], font=self.app.f_bold).pack(side="left")
+            v = tk.StringVar(value="")
+            self.val_vars.append(v)
+            tk.Label(row, textvariable=v, bg=C["bg"], fg=C["muted"], width=10, anchor="w").pack(side="left", padx=(6, 2))
+            x = tk.Label(row, text="✕", bg=C["bg"], fg=C["muted"], cursor="hand2")
+            x.pack(side="left")
+            x.bind("<Button-1>", lambda e, t=tr: self._remove(t))
+            Tooltip(x, "Remove this trace")
+
+    def _remove(self, tr):
+        if tr in self.app.scope_traces:
+            self.app.scope_traces.remove(tr)
+        self.build_legend()
+        self.redraw(True)
+
+    @staticmethod
+    def _visible(tr, t0, t1):
+        data = tr["data"]
+        i = max(0, bisect_left(data, (t0,)) - 1)
+        return data[i:]
+
+    def redraw(self, force=False):
+        now = time.perf_counter()
+        if not force and now - self._last < 0.066:
+            return
+        self._last = now
+        try:
+            cv = self.cv
+            cv.delete("all")
+            W, H = cv.winfo_width(), cv.winfo_height()
+        except tk.TclError:
+            return
+        if W < 60 or H < 60:
+            return
+        app = self.app
+        sim = app.sim
+        s = app.ui_scale
+        trs = app.scope_traces
+        volt = [t for t in trs if t["kind"] != "i"]
+        amp = [t for t in trs if t["kind"] == "i"]
+        x0, x1 = int(64 * s), W - (int(64 * s) if amp else int(18 * s))
+        y0, y1 = int(14 * s), H - int(30 * s)
+        if x1 - x0 < 40 or y1 - y0 < 40:
+            return
+        font = (app.fam, -int(10 * s))
+        win = app.scope_window_len()
+        if sim is not None:
+            tnow = sim.t
+        else:
+            tnow = max([tr["data"][-1][0] for tr in trs if tr["data"]] or [0.0])
+        t1 = max(tnow, win)
+        t0 = t1 - win
+        vis = {id(tr): self._visible(tr, t0, t1) for tr in trs}
+
+        def rng(group):
+            vals = [v for tr in group for _t, v in vis[id(tr)]]
+            if not vals:
+                return -1.0, 1.0
+            lo, hi = min(vals), max(vals)
+            if hi - lo < 1e-9:
+                pad = max(abs(hi) * 0.1, 1e-3)
+            else:
+                pad = (hi - lo) * 0.08
+            return lo - pad, hi + pad
+
+        vlo, vhi, vt = _nice_ticks(*rng(volt))
+        alo, ahi, at = _nice_ticks(*rng(amp))
+        grid = "#eef1f5"
+
+        def Xt(t):
+            return x0 + (t - t0) / (t1 - t0) * (x1 - x0)
+
+        _a, _b, xt = _nice_ticks(t0, t1, 6)
+        for tt in xt:
+            if t0 - 1e-15 <= tt <= t1 + 1e-15:
+                X = Xt(tt)
+                cv.create_line(X, y0, X, y1, fill=grid)
+                cv.create_text(X, y1 + 4, text=fmt_si(tt, "s"), anchor="n", fill=C["muted"], font=font)
+        for v in vt:
+            Y = y1 - (v - vlo) / (vhi - vlo) * (y1 - y0)
+            cv.create_line(x0, Y, x1, Y, fill="#d6dce4" if v == 0 else grid)
+            if volt:
+                cv.create_text(x0 - 6, Y, text=fmt_si(v, "V"), anchor="e", fill=C["muted"], font=font)
+        if amp:
+            for a in at:
+                Y = y1 - (a - alo) / (ahi - alo) * (y1 - y0)
+                cv.create_text(x1 + 6, Y, text=fmt_si(a, "A"), anchor="w", fill=C["muted"], font=font)
+        cv.create_rectangle(x0, y0, x1, y1, outline=C["border"])
+        for group, lo, hi in ((volt, vlo, vhi), (amp, alo, ahi)):
+            for tr in group:
+                pts = vis[id(tr)]
+                if len(pts) < 2:
+                    continue
+                step = max(1, len(pts) // max(1, 2 * (x1 - x0)))
+                coords = []
+                for t, v in pts[::step]:
+                    X = max(x0, min(x1, Xt(t)))
+                    Y = y1 - (v - lo) / (hi - lo) * (y1 - y0)
+                    coords += [X, max(y0, min(y1, Y))]
+                if len(coords) >= 4:
+                    cv.create_line(*coords, fill=tr["color"], width=max(1.5, 2 * s))
+        if not trs:
+            cv.create_text((x0 + x1) / 2, (y0 + y1) / 2, fill=C["muted"], font=(app.fam, -int(12 * s)),
+                           text="Nothing plotted yet.\nRight-click a wire or a part and choose “Plot…”.", justify="center")
+        elif sim is None:
+            cv.create_text((x0 + x1) / 2, y0 + 16 * s, fill=C["muted"], font=(app.fam, -int(12 * s)),
+                           text="The simulation is stopped. Press ▶ Simulate to see live traces.")
+        for var, tr in zip(self.val_vars, trs):
+            var.set(fmt_si(tr["data"][-1][1], "A" if tr["kind"] == "i" else "V") if tr["data"] else "—")
+
+    def _export(self):
+        trs = self.app.scope_traces
+        if not any(tr["data"] for tr in trs):
+            messagebox.showinfo(APP_NAME, "There is no data to export yet.", parent=self)
+            return
+        path = filedialog.asksaveasfilename(parent=self, title="Export oscilloscope data", defaultextension=".csv",
+                                            initialfile="oscilloscope.csv", filetypes=[("Spreadsheet (CSV)", "*.csv")])
+        if not path:
+            return
+        cols = [dict(tr["data"]) for tr in trs]
+        times = sorted(set(t for col in cols for t in col))
+        try:
+            with open(path, "w", newline="", encoding="utf-8-sig") as f:
+                wr = csv.writer(f)
+                wr.writerow(["time (s)"] + ["%s (%s)" % (tr["name"], "A" if tr["kind"] == "i" else "V") for tr in trs])
+                for t in times:
+                    wr.writerow(["%.9g" % t] + ["" if t not in col else "%.6g" % col[t] for col in cols])
+        except OSError as e:
+            messagebox.showerror(APP_NAME, "Could not export:\n%s" % e, parent=self)
+            return
+        self.app.flash("Oscilloscope data saved to %s" % os.path.basename(path))
+
+
+class FreqWindow(tk.Toplevel):
+    def __init__(self, app):
+        super().__init__(app.root)
+        self.app = app
+        s = app.ui_scale
+        self.title("Frequency response — " + APP_NAME)
+        self.configure(bg=C["bg"])
+        self.geometry("%dx%d" % (int(820 * s), int(580 * s)))
+        self.minsize(int(560 * s), int(400 * s))
+        top = ttk.Frame(self, style="Bg.TFrame", padding=(10, 10, 10, 4))
+        top.pack(fill="x")
+        ttk.Label(top, text="Input source", style="Status.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(top, text="Output (measured at)", style="Status.TLabel").grid(row=0, column=1, sticky="w", padx=(10, 0))
+        ttk.Label(top, text="From", style="Status.TLabel").grid(row=0, column=2, sticky="w", padx=(10, 0))
+        ttk.Label(top, text="To", style="Status.TLabel").grid(row=0, column=3, sticky="w", padx=(6, 0))
+        self.v_src = tk.StringVar()
+        self.v_out = tk.StringVar()
+        self.v_f0 = tk.StringVar(value="10 Hz")
+        self.v_f1 = tk.StringVar(value="1 MHz")
+        self.cb_src = ttk.Combobox(top, textvariable=self.v_src, state="readonly", width=24)
+        self.cb_src.grid(row=1, column=0, sticky="w")
+        self.cb_out = ttk.Combobox(top, textvariable=self.v_out, state="readonly", width=34)
+        self.cb_out.grid(row=1, column=1, sticky="w", padx=(10, 0))
+        ttk.Entry(top, textvariable=self.v_f0, width=9).grid(row=1, column=2, sticky="w", padx=(10, 0))
+        ttk.Entry(top, textvariable=self.v_f1, width=9).grid(row=1, column=3, sticky="w", padx=(6, 0))
+        ttk.Button(top, text="Plot", style="Accent.TButton", command=self.run).grid(row=1, column=4, padx=(10, 0))
+        ttk.Button(top, text="Export CSV…", command=self._export).grid(row=1, column=5, padx=(6, 0))
+        self.info_var = tk.StringVar(value="Choose the input source and where to measure, then press Plot.")
+        tk.Label(self, textvariable=self.info_var, bg=C["bg"], fg=C["text"], font=app.f_bold, anchor="w",
+                 justify="left").pack(fill="x", padx=12, pady=(4, 0))
+        self.cv = tk.Canvas(self, bg="white", highlightthickness=1, highlightbackground=C["border"])
+        self.cv.pack(fill="both", expand=True, padx=10, pady=(4, 10))
+        self.cv.bind("<Configure>", lambda e: self.draw())
+        self.cv.bind("<Motion>", self._motion)
+        self.cv.bind("<Leave>", lambda e: self._set_hover(None))
+        self.protocol("WM_DELETE_WINDOW", self.close)
+        self.bind("<Escape>", lambda e: self.close())
+        self.data = None
+        self.marks = []
+        self.hover = None
+        self.sources, self.outputs = [], []
+        self.refresh_lists()
+        if self.sources and self.outputs:
+            self.after(60, self.run)
+
+    def close(self):
+        self.app.freq_win = None
+        self.destroy()
+
+    def refresh_lists(self):
+        app = self.app
+        src, outs = [], []
+        for cid, c in app.comps.items():
+            m = sim_model_of(app.library, c)
+            if m in ("ac_source", "dc_source", "battery", "square_source"):
+                src.append((0 if m == "ac_source" else 1, "%s  (%s)" % (c.get("label") or "?", app.rdef(c).name), cid))
+            if m == "probe" and (cid, 0) in app.connected_pins():
+                outs.append(("%s  (probe)" % (c.get("label") or "?"), (cid, 0)))
+        src.sort(key=lambda t: t[0])
+        self.sources = [(n, cid) for _k, n, cid in src]
+        for n in app.compute_nets():
+            if n["name"] != "GND":
+                outs.append(("Net %s  —  %s" % (n["name"], ", ".join(app.pin_name(k) for k in n["pins"][:2])), n["pins"][0]))
+        self.outputs = outs
+        self.cb_src.configure(values=[n for n, _ in self.sources])
+        self.cb_out.configure(values=[n for n, _ in self.outputs])
+        if self.v_src.get() not in [n for n, _ in self.sources]:
+            self.v_src.set(self.sources[0][0] if self.sources else "")
+        if self.v_out.get() not in [n for n, _ in self.outputs]:
+            # default: the first measuring point that isn't wired straight to the input source
+            pm = app.pin_net_map()
+            cid = dict(self.sources).get(self.v_src.get())
+            src_nets = set()
+            if cid in app.comps:
+                src_nets = {pm[(cid, i)]["name"] for i in range(len(app.rdef(app.comps[cid]).pins)) if (cid, i) in pm}
+            pick = next((n for n, k in self.outputs if (pm.get(tuple(k)) or {}).get("name") not in src_nets),
+                        self.outputs[0][0] if self.outputs else "")
+            self.v_out.set(pick)
+
+    def run(self):
+        self.refresh_lists()
+        if not self.sources:
+            messagebox.showinfo(APP_NAME, "Add an AC voltage source (or any voltage source) to feed the circuit, "
+                                          "then try again.", parent=self)
+            return
+        if not self.outputs:
+            messagebox.showinfo(APP_NAME, "Wire the circuit up first, then choose where to measure.", parent=self)
+            return
+        f0, f1 = qty(self.v_f0.get(), "hz"), qty(self.v_f1.get(), "hz")
+        if not f0 or not f1 or f0 <= 0 or f1 <= f0:
+            messagebox.showwarning(APP_NAME, "Enter a frequency range like 10 Hz to 1 MHz.", parent=self)
+            return
+        cid = dict(self.sources).get(self.v_src.get())
+        key = dict(self.outputs).get(self.v_out.get())
+        sim = Sim(self.app)
+        if sim.error:
+            messagebox.showerror(APP_NAME, sim.error, parent=self)
+            return
+        src = sim.by_cid.get(cid)
+        node = sim.node_of.get(tuple(key)) if key is not None else None
+        if src is None or src.br is None or node is None:
+            messagebox.showwarning(APP_NAME, "That source or measuring point isn’t part of the simulated circuit.", parent=self)
+            return
+        n = 241
+        freqs = [f0 * (f1 / f0) ** (i / (n - 1.0)) for i in range(n)]
+        self.configure(cursor="watch")
+        self.update_idletasks()
+        try:
+            H = sim.ac_sweep(src, node, freqs)
+        except SimError as e:
+            messagebox.showerror(APP_NAME, str(e), parent=self)
+            return
+        finally:
+            self.configure(cursor="")
+        mag, ph = [], []
+        prev = None
+        for h in H:
+            if not (abs(h) == abs(h)) or abs(h) < 1e-15:
+                mag.append(float("nan"))
+                ph.append(float("nan"))
+                continue
+            mag.append(20 * math.log10(abs(h)))
+            p = math.degrees(math.atan2(h.imag, h.real))
+            if prev is not None:
+                while p - prev > 180:
+                    p -= 360
+                while p - prev < -180:
+                    p += 360
+            prev = p
+            ph.append(p)
+        self.data = (freqs, mag, ph)
+        self._analyse()
+        self.draw()
+
+    def _analyse(self):
+        f, g, _p = self.data
+        good = [i for i in range(len(f)) if math.isfinite(g[i])]
+        self.marks = []
+        if not good:
+            self.info_var.set("No response at this output (it may not be connected to the source).")
+            return
+        imax = max(good, key=lambda i: g[i])
+        gmax = g[imax]
+        thr = gmax - 3.0
+
+        def cross(i0, step):
+            i = i0
+            while 0 <= i + step < len(f):
+                j = i + step
+                if math.isfinite(g[j]) and g[j] < thr:
+                    t = (g[i] - thr) / (g[i] - g[j]) if g[i] != g[j] else 0.0
+                    return 10 ** (math.log10(f[i]) + t * (math.log10(f[j]) - math.log10(f[i])))
+                i = j
+            return None
+
+        flo, fhi = cross(imax, -1), cross(imax, 1)
+        if flo and fhi:
+            kind = "Band-pass: passes about %s to %s" % (fmt_si(flo, "Hz"), fmt_si(fhi, "Hz"))
+        elif fhi:
+            kind = "Low-pass: −3 dB cutoff at %s" % fmt_si(fhi, "Hz")
+        elif flo:
+            kind = "High-pass: −3 dB cutoff at %s" % fmt_si(flo, "Hz")
+        else:
+            kind = "Flat (within 3 dB) over this range"
+        self.marks = [m for m in (flo, fhi) if m]
+        gshow = 0.0 if abs(gmax) < 0.05 else gmax
+        self.info_var.set("%s     ·     Highest gain %s dB (× %.3g) at %s"
+                          % (kind, ("%.1f" % gshow).replace("-", "−"), 10 ** (gmax / 20.0), fmt_si(f[imax], "Hz")))
+
+    def _geom(self):
+        W, H = self.cv.winfo_width(), self.cv.winfo_height()
+        s = self.app.ui_scale
+        x0, x1 = int(64 * s), W - int(18 * s)
+        top0, bot1 = int(14 * s), H - int(30 * s)
+        gap = int(26 * s)
+        h1 = (bot1 - top0 - gap) * 0.58
+        return W, H, x0, x1, (top0, top0 + h1), (top0 + h1 + gap, bot1)
+
+    def _x(self, fr, x0, x1):
+        f = self.data[0]
+        a, b = math.log10(f[0]), math.log10(f[-1])
+        return x0 + (math.log10(fr) - a) / (b - a) * (x1 - x0)
+
+    def draw(self):
+        cv = self.cv
+        cv.delete("all")
+        app = self.app
+        s = app.ui_scale
+        font = (app.fam, -int(10 * s))
+        W, H, x0, x1, (a0, a1), (b0, b1) = self._geom()
+        if W < 80 or H < 80:
+            return
+        if not self.data:
+            cv.create_text(W / 2, H / 2, text="Choose the input source and where to measure, then press Plot.",
+                           fill=C["muted"], font=(app.fam, -int(12 * s)))
+            return
+        f, g, ph = self.data
+        grid, minor = "#e6eaf0", "#f3f5f8"
+        for d in range(int(math.floor(math.log10(f[0]))), int(math.ceil(math.log10(f[-1]))) + 1):
+            for m in range(1, 10):
+                fr = m * 10 ** d
+                if f[0] <= fr <= f[-1]:
+                    X = self._x(fr, x0, x1)
+                    for top, bot in ((a0, a1), (b0, b1)):
+                        cv.create_line(X, top, X, bot, fill=grid if m == 1 else minor)
+                    if m == 1:
+                        cv.create_text(X, b1 + 4, text=fmt_si(fr, "Hz"), anchor="n", fill=C["muted"], font=font)
+        for (top, bot), vals, unit, title in (((a0, a1), g, "dB", "Gain (dB)"), ((b0, b1), ph, "°", "Phase (degrees)")):
+            fin = [v for v in vals if math.isfinite(v)]
+            lo, hi = (min(fin), max(fin)) if fin else (-1.0, 1.0)
+            if hi - lo < 1.0:
+                lo, hi = lo - 1.0, hi + 1.0
+            lo, hi, ticks = _nice_ticks(lo, hi, 5)
+            for v in ticks:
+                Y = bot - (v - lo) / (hi - lo) * (bot - top)
+                cv.create_line(x0, Y, x1, Y, fill=grid)
+                cv.create_text(x0 - 6, Y, text=("%g" % round(v, 6)).replace("-", "−"), anchor="e", fill=C["muted"], font=font)
+            cv.create_rectangle(x0, top, x1, bot, outline=C["border"])
+            cv.create_text(x0 + 6, top + 4, text=title, anchor="nw", fill=C["muted"], font=(app.fam, -int(10 * s), "bold"))
+            seg = []
+            for fr, v in zip(f, vals):
+                if math.isfinite(v):
+                    seg += [self._x(fr, x0, x1), bot - (v - lo) / (hi - lo) * (bot - top)]
+                else:
+                    if len(seg) >= 4:
+                        cv.create_line(*seg, fill=C["accent"], width=max(1.5, 2 * s))
+                    seg = []
+            if len(seg) >= 4:
+                cv.create_line(*seg, fill=C["accent"], width=max(1.5, 2 * s))
+        for mk in self.marks:
+            X = self._x(mk, x0, x1)
+            cv.create_line(X, a0, X, b1, fill="#ea580c", dash=(4, 3))
+            cv.create_text(X + 4, a1 - 4, text="−3 dB  " + fmt_si(mk, "Hz"), anchor="sw", fill="#ea580c", font=font)
+        if self.hover is not None:
+            i = self.hover
+            X = self._x(f[i], x0, x1)
+            cv.create_line(X, a0, X, b1, fill=C["text"], dash=(2, 2))
+            txt = "%s   ·   %s dB   ·   %s°" % (fmt_si(f[i], "Hz"),
+                                                ("%.2f" % g[i]) if math.isfinite(g[i]) else "—",
+                                                ("%.1f" % ph[i]) if math.isfinite(ph[i]) else "—")
+            t = cv.create_text(min(X + 8, x1 - 4), a0 + 22 * s, text=txt.replace("-", "−"),
+                               anchor="nw" if X + 8 < x1 - 220 * s else "ne", fill="white", font=font)
+            b = cv.bbox(t)
+            if b:
+                r = cv.create_rectangle(b[0] - 6, b[1] - 3, b[2] + 6, b[3] + 3, fill="#1f2933", outline="")
+                cv.tag_lower(r, t)
+
+    def _motion(self, e):
+        if not self.data:
+            return
+        W, H, x0, x1, _a, _b = self._geom()
+        if not x0 <= e.x <= x1:
+            self._set_hover(None)
+            return
+        f = self.data[0]
+        a, b = math.log10(f[0]), math.log10(f[-1])
+        fr = 10 ** (a + (e.x - x0) / float(x1 - x0) * (b - a))
+        i = min(range(len(f)), key=lambda k: abs(math.log10(f[k]) - math.log10(fr)))
+        self._set_hover(i)
+
+    def _set_hover(self, i):
+        if i != self.hover:
+            self.hover = i
+            self.draw()
+
+    def _export(self):
+        if not self.data:
+            messagebox.showinfo(APP_NAME, "Press Plot first.", parent=self)
+            return
+        path = filedialog.asksaveasfilename(parent=self, title="Export frequency response", defaultextension=".csv",
+                                            initialfile="frequency_response.csv", filetypes=[("Spreadsheet (CSV)", "*.csv")])
+        if not path:
+            return
+        try:
+            with open(path, "w", newline="", encoding="utf-8-sig") as fh:
+                wr = csv.writer(fh)
+                wr.writerow(["frequency (Hz)", "gain (dB)", "phase (degrees)"])
+                for fr, g, p in zip(*self.data):
+                    wr.writerow(["%.6g" % fr, "%.4f" % g if math.isfinite(g) else "", "%.3f" % p if math.isfinite(p) else ""])
+        except OSError as e:
+            messagebox.showerror(APP_NAME, "Could not export:\n%s" % e, parent=self)
+            return
+        self.app.flash("Frequency response saved to %s" % os.path.basename(path))
 
 
 # --------------------------------------------------------------------------
