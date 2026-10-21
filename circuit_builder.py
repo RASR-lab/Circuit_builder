@@ -12,6 +12,7 @@ A friendly circuit / wiring-diagram editor for undergraduate students.
 
 Runs on Windows (also macOS / Linux) with Python 3.8 or newer.
 Only the standard library is used (Tkinter ships with the Windows installer).
+If Pillow is installed it is used for smoother pictures, but it is optional.
 """
 
 import copy
@@ -23,12 +24,29 @@ import re
 import sys
 import uuid
 import base64
+import hashlib
+import io
+import shutil
+import struct
+import subprocess
+import tempfile
+import zlib
+from collections import OrderedDict
+from itertools import repeat
+from operator import add as _op_add, itemgetter
 import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import ttk, filedialog, messagebox, colorchooser
 
+try:  # optional: JPG/BMP/WebP support and higher-quality scaling of pictures
+    from PIL import Image as _PILImage
+    from PIL import ImageOps as _PILOps
+except Exception:  # Pillow not installed: pictures still work (PNG/GIF, plus JPG on Windows)
+    _PILImage = None
+    _PILOps = None
+
 APP_NAME = "Circuit Builder"
-APP_VERSION = "1.0"
+APP_VERSION = "1.1"
 FILE_EXT = ".circuit"
 LIB_EXT = ".cblib"
 G = 24  # pixels per grid unit at 100 % zoom
@@ -529,6 +547,9 @@ class RDef:
         self.label_mode = d.get("label_mode", "both")
         self.color = d.get("color", "#e8eefc")
         self.box = None
+        self.image = d.get("image") if valid_picture(d.get("image")) else None
+        self.image_key = picture_key(self.image) if self.image else None
+        self.pic_region = None
         if self.symbol == "box":
             self._build_box(d)
         else:
@@ -592,11 +613,20 @@ class RDef:
         self.pivot = (w // 2, h // 2)
         def side_room(side):
             n = max([len(p.get("name", "")) for p in d.get("pins", []) if p.get("side") == side] or [0])
-            return (n * 5.3 + 9) / G if n else 0.15
+            return pin_label_room(n)
         x0, x1 = side_room("left"), w - side_room("right")
         if x1 - x0 < 1.5:
             x0, x1 = 0.15, w - 0.15
         self.text_region = (x0, x1)
+        if self.image:
+            # the picture and the label go in the middle, clear of the pin names on every side
+            px0, px1 = side_room("left") + 0.1, w - side_room("right") - 0.1
+            py0, py1 = side_room("top") + 0.1, h - side_room("bottom") - 0.1
+            if px1 - px0 < 1:
+                px0, px1 = 0.15, w - 0.15
+            if py1 - py0 < 1:
+                py0, py1 = 0.15, h - 0.15
+            self.pic_region = (px0, py0, px1, py1)
 
 
 def local_to_world(comp, rd, lx, ly):
@@ -623,6 +653,67 @@ def anchor_for(dx, dy):
     if abs(dx) > abs(dy):
         return "w" if dx > 0 else "e"
     return "n" if dy > 0 else "s"
+
+
+_FONT_CACHE = {}
+
+
+def _fit_text(text, fam, px, weight, max_w):
+    """Shorten text with … so it fits in max_w pixels."""
+    key = (fam, px, weight)
+    f = _FONT_CACHE.get(key)
+    if f is None:
+        try:
+            f = _FONT_CACHE[key] = tkfont.Font(family=fam, size=-px, weight=weight)
+        except tk.TclError:
+            return text
+    if max_w <= 0 or f.measure(text) <= max_w:
+        return text
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if f.measure(text[:mid].rstrip() + "…") <= max_w:
+            lo = mid
+        else:
+            hi = mid - 1
+    return text[:lo].rstrip() + "…" if lo else "…"
+
+
+def _draw_picture_body(cv, rd, comp, tp, z, fam, color, label, value, tags):
+    """Picture in the middle of a box part, with the part's label underneath (kept upright)."""
+    x0, y0, x1, y1 = rd.pic_region
+    (ax, ay), (bx, by) = tp((x0, y0)), tp((x1, y1))
+    sx0, sx1 = sorted((ax, bx))
+    sy0, sy1 = sorted((ay, by))
+    big, small = int(round(11 * z)), int(round(9 * z))
+    sub = (rd.name + ("  ·  " + value if value else "")) if label else value
+    lines = []
+    if big >= 5:
+        lines.append((label or rd.name, big, "bold", color))
+    if sub and small >= 5:
+        lines.append((sub, small, "normal", C["muted"]))
+    lab_h = sum(px * 1.28 for _t, px, _w, _c in lines)
+    pad = max(1.0, 2.0 * z)
+    avail_w, avail_h = sx1 - sx0 - 2 * pad, sy1 - sy0 - 2 * pad - lab_h
+    img, dh = None, 0
+    if avail_w >= 6 and avail_h >= 6:
+        iw, ih = rd.image["w"], rd.image["h"]
+        s = min(avail_w / float(iw), avail_h / float(ih))
+        s = 1.04 ** math.floor(math.log(s) / math.log(1.04) + 1e-9)  # re-use sizes while zooming
+        dw, dh = max(1, int(iw * s)), max(1, int(ih * s))
+        img = PICTURES.photo(rd.image, dw, dh, rd.image_key)
+        if img is None:
+            dh = 0
+    gap = 2 * z if (img is not None and lines) else 0
+    cx = (sx0 + sx1) / 2.0
+    y = (sy0 + sy1) / 2.0 - (dh + gap + lab_h) / 2.0
+    if img is not None:
+        cv.create_image(cx, y + dh / 2.0, image=img, anchor="center", tags=tags + ("picture",))
+    y += dh + gap
+    for text, px, weight, fill in lines:
+        cv.create_text(cx, y, text=_fit_text(text, fam, px, weight, sx1 - sx0), anchor="n", fill=fill,
+                       font=(fam, -px, weight), tags=tags)
+        y += px * 1.28
 
 
 def render_component(cv, rd, comp, T, z, fam, state="normal", connected=frozenset(),
@@ -691,7 +782,9 @@ def render_component(cv, rd, comp, T, z, fam, state="normal", connected=frozense
 
     label = comp.get("label", "")
     value = comp.get("value", "")
-    if rd.box:
+    if rd.box and rd.pic_region:
+        _draw_picture_body(cv, rd, comp, tp, z, fam, stroke, label, value, tags)
+    elif rd.box:
         w, h = rd.box
         if comp.get("rot", 0) % 2 == 0:
             tx0, tx1 = rd.text_region
@@ -829,6 +922,508 @@ def new_id():
     return uuid.uuid4().hex[:8]
 
 
+# --------------------------------------------------------------------------
+# Pictures on components
+# --------------------------------------------------------------------------
+# A picture is stored inside a component definition as
+#     "image": {"data": "<base64 PNG>", "w": width_px, "h": height_px}
+# so it travels with .cblib and .circuit files.  Pictures are shrunk to at most
+# PICTURE_MAX pixels when they are added, which keeps those files small.
+PICTURE_MAX = 400
+PICTURE_FILETYPES = [("Pictures", "*.png *.jpg *.jpeg *.gif *.bmp *.webp *.tif *.tiff"),
+                     ("All files", "*.*")]
+PIC_SIZE = 4.0       # default picture size (longer side, in grid squares) when a part sizes itself
+PIC_LABEL_H = 1.15   # room kept under the picture for the part's label (grid squares)
+
+if _PILImage is not None:
+    _LANCZOS = getattr(getattr(_PILImage, "Resampling", _PILImage), "LANCZOS")
+else:
+    _LANCZOS = None
+
+
+class PictureError(Exception):
+    pass
+
+
+def valid_picture(img):
+    try:
+        return bool(isinstance(img, dict) and isinstance(img.get("data"), str) and img["data"]
+                    and int(img.get("w", 0)) > 0 and int(img.get("h", 0)) > 0)
+    except (TypeError, ValueError):
+        return False
+
+
+def picture_key(img):
+    return hashlib.sha1(img["data"].encode("ascii", "ignore")).hexdigest()[:16]
+
+
+def fit_size(w, h, max_w, max_h):
+    """Largest (w, h) with the same shape as w x h that fits inside max_w x max_h."""
+    s = min(max_w / float(w), max_h / float(h))
+    return max(1, int(w * s)), max(1, int(h * s))
+
+
+def pin_label_room(n_chars):
+    """Room (grid squares) that a pin name of n_chars takes up inside a box part."""
+    return (n_chars * 5.3 + 9) / G if n_chars else 0.15
+
+
+def picture_auto_size(img, room):
+    """Smallest box (w, h) that shows the picture at its default size.
+    room: space taken by pin names on each side ("left", "right", "top", "bottom")."""
+    a = img["w"] / float(img["h"])
+    pw, ph = (PIC_SIZE, PIC_SIZE / a) if a >= 1 else (PIC_SIZE * a, PIC_SIZE)
+    pw, ph = max(pw, 1.5), max(ph, 1.5)
+    w = room["left"] + room["right"] + pw + 0.6
+    h = room["top"] + room["bottom"] + ph + PIC_LABEL_H + 0.6
+    return int(math.ceil(w - 1e-6)), int(math.ceil(h - 1e-6))
+
+
+# ---- tiny PNG reader/writer (8-bit, non-interlaced), used when Pillow is not installed
+_PNG_SIG = b"\x89PNG\r\n\x1a\n"
+
+
+def _png_chunk(tag, data):
+    return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff)
+
+
+def _sub255(a, b):
+    return (a - b) & 255
+
+
+def png_encode(px, w, h, n, level=6, up_filter=False):
+    """Encode w*h*n bytes (n = 3 for RGB, 4 for RGBA) as a PNG file."""
+    stride = w * n
+    parts, prev = [], None
+    for y in range(h):
+        row = px[y * stride:(y + 1) * stride]
+        if up_filter and prev is not None:
+            parts.append(b"\x02" + bytes(map(_sub255, row, prev)))
+        else:
+            parts.append(b"\x00" + bytes(row))
+        prev = row
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 6 if n == 4 else 2, 0, 0, 0)
+    return (_PNG_SIG + _png_chunk(b"IHDR", ihdr)
+            + _png_chunk(b"IDAT", zlib.compress(b"".join(parts), level)) + _png_chunk(b"IEND", b""))
+
+
+def png_size(raw):
+    if raw[:8] != _PNG_SIG or raw[12:16] != b"IHDR":
+        raise ValueError("not a PNG file")
+    return struct.unpack(">II", raw[16:24])
+
+
+def _png_unfilter(dec, h, stride, bpp):
+    out = bytearray(h * stride)
+    prev = bytearray(stride)
+    pos = 0
+    for y in range(h):
+        f = dec[pos]
+        line = bytearray(dec[pos + 1:pos + 1 + stride])
+        pos += stride + 1
+        if f == 1:
+            for i in range(bpp, stride):
+                line[i] = (line[i] + line[i - bpp]) & 255
+        elif f == 2:
+            line = bytearray((a + b) & 255 for a, b in zip(line, prev))
+        elif f == 3:
+            for i in range(stride):
+                left = line[i - bpp] if i >= bpp else 0
+                line[i] = (line[i] + ((left + prev[i]) >> 1)) & 255
+        elif f == 4:
+            for i in range(stride):
+                a = line[i - bpp] if i >= bpp else 0
+                b = prev[i]
+                c = prev[i - bpp] if i >= bpp else 0
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                line[i] = (line[i] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 255
+        out[y * stride:(y + 1) * stride] = line
+        prev = line
+    return out
+
+
+def png_decode(raw):
+    """Decode an 8-bit PNG -> (w, h, n, pixels) with n = 3 (RGB) or 4 (RGBA)."""
+    if raw[:8] != _PNG_SIG:
+        raise ValueError("not a PNG file")
+    pos, idat, hdr = 8, [], None
+    while pos + 8 <= len(raw):
+        ln, tag = struct.unpack(">I4s", raw[pos:pos + 8])
+        body = raw[pos + 8:pos + 8 + ln]
+        if tag == b"IHDR":
+            hdr = struct.unpack(">IIBBBBB", body)
+        elif tag == b"IDAT":
+            idat.append(body)
+        elif tag == b"IEND":
+            break
+        pos += 12 + ln
+    if not hdr:
+        raise ValueError("damaged PNG file")
+    w, h, depth, ctype, _comp, _filt, interlace = hdr
+    chans = {0: 1, 2: 3, 4: 2, 6: 4}.get(ctype)
+    if depth != 8 or chans is None or interlace:
+        raise ValueError("unsupported PNG type")
+    stride = w * chans
+    dec = zlib.decompress(b"".join(idat))
+    if all(dec[y * (stride + 1)] == 0 for y in range(h)):  # unfiltered rows (this is what Tk writes)
+        px = b"".join(dec[y * (stride + 1) + 1:(y + 1) * (stride + 1)] for y in range(h))
+    else:
+        px = bytes(_png_unfilter(dec, h, stride, chans))
+    if chans in (1, 2):  # grey (+ alpha) -> RGB(A)
+        g = px[0::chans]
+        n = 3 if chans == 1 else 4
+        out = bytearray(w * h * n)
+        out[0::n], out[1::n], out[2::n] = g, g, g
+        if n == 4:
+            out[3::4] = px[1::2]
+        return w, h, n, bytes(out)
+    return w, h, chans, px
+
+
+def _mul_alpha(v, a):
+    return (v * a + 127) // 255
+
+
+def _div_alpha(v, a):
+    return min(255, (v * 255 + a // 2) // a) if a else 0
+
+
+def _alpha_from(on_black, on_white):
+    return max(0, min(255, 255 - (on_white - on_black)))
+
+
+def _premultiply(w, h, n, px):
+    """Straight RGBA -> premultiplied RGBA (fully opaque pictures become plain RGB)."""
+    if n != 4:
+        return w, h, n, bytes(px)
+    alpha = px[3::4]
+    if alpha.count(255) == len(alpha):
+        rgb = bytearray(w * h * 3)
+        rgb[0::3], rgb[1::3], rgb[2::3] = px[0::4], px[1::4], px[2::4]
+        return w, h, 3, bytes(rgb)
+    out = bytearray(px)
+    for c in range(3):
+        out[c::4] = bytes(map(_mul_alpha, px[c::4], alpha))
+    return w, h, 4, bytes(out)
+
+
+def _unpremultiply(n, px):
+    if n != 4:
+        return px
+    alpha = px[3::4]
+    out = bytearray(px)
+    for c in range(3):
+        out[c::4] = bytes(map(_div_alpha, px[c::4], alpha))
+    return bytes(out)
+
+
+def _photo_pixels(photo):
+    """Pixels of a Tk photo image -> (w, h, n, straight RGB/RGBA bytes)."""
+    try:
+        raw = photo.tk.call(photo.name, "data", "-format", "png")
+        if isinstance(raw, str):
+            raw = base64.b64decode(raw)
+        return png_decode(bytes(raw))
+    except Exception:
+        pass
+    # Fallback: read the colours over black and over white to recover the transparency.
+    w, h = photo.width(), photo.height()
+
+    def grab(bg):
+        rows = photo.tk.call(photo.name, "data", "-background", bg)
+        if isinstance(rows, str):
+            rows = photo.tk.splitlist(rows)
+        txt = " ".join(r if isinstance(r, str) else " ".join(r) for r in rows)
+        return bytes.fromhex(txt.replace("#", " "))
+
+    black, white = grab("#000000"), grab("#ffffff")
+    alpha = bytes(map(_alpha_from, black[1::3], white[1::3]))
+    if alpha.count(255) == len(alpha):
+        return w, h, 3, black
+    out = bytearray(w * h * 4)
+    out[0::4], out[1::4], out[2::4], out[3::4] = black[0::3], black[1::3], black[2::3], alpha
+    return w, h, 4, _unpremultiply(4, bytes(out))
+
+
+def _box_shrink(px, w, h, n, kx, ky):
+    """Average kx x ky blocks of pixels (premultiplied) -> (pixels, new_w, new_h)."""
+    nw, nh = w // kx, h // ky
+    stride, span, step, cnt = w * n, nw * kx * n, kx * n, kx * ky
+
+    def div(v, c=cnt, half=cnt // 2):
+        return (v + half) // c
+
+    out = bytearray(nw * nh * n)
+    for oy in range(nh):
+        acc = [None] * n
+        for dy in range(ky):
+            off = (oy * ky + dy) * stride
+            row = px[off:off + span]
+            for dx in range(kx):
+                for c in range(n):
+                    part = row[dx * n + c::step]
+                    acc[c] = list(part) if acc[c] is None else list(map(_op_add, acc[c], part))
+        line = bytearray(nw * n)
+        for c in range(n):
+            line[c::n] = bytes(map(div, acc[c]))
+        out[oy * nw * n:(oy + 1) * nw * n] = line
+    return bytes(out), nw, nh
+
+
+def _axis(src, dst):
+    i0, i1, f = [], [], []
+    sc = src / float(dst)
+    for d in range(dst):
+        s = (d + 0.5) * sc - 0.5
+        if s <= 0:
+            a, t = 0, 0.0
+        elif s >= src - 1:
+            a, t = src - 1, 0.0
+        else:
+            a = int(s)
+            t = s - a
+        i0.append(a)
+        i1.append(min(a + 1, src - 1))
+        f.append(int(t * 256 + 0.5))
+    return i0, i1, f
+
+
+def _lerp(a, b, wa, wb):
+    return (a * wa + b * wb + 128) >> 8
+
+
+def _bilinear(px, w, h, n, dw, dh):
+    """Resize pixels to exactly dw x dh with linear interpolation."""
+    if (w, h) == (dw, dh):
+        return px
+    stride = w * n
+    yi0, yi1, yf = _axis(h, dh)
+    rows = {}
+    if dw == w:
+        def hrow(y):
+            return px[y * stride:(y + 1) * stride]
+    else:
+        xi0, xi1, xf = _axis(w, dw)
+        g0 = itemgetter(*[x * n + c for x in xi0 for c in range(n)])
+        g1 = itemgetter(*[x * n + c for x in xi1 for c in range(n)])
+        wb = [f for f in xf for _ in range(n)]
+        wa = [256 - f for f in wb]
+
+        def hrow(y):
+            r = px[y * stride:(y + 1) * stride]
+            return bytes(map(_lerp, g0(r), g1(r), wa, wb))
+    out = bytearray()
+    for y in range(dh):
+        a, b, f = yi0[y], yi1[y], yf[y]
+        if a not in rows:
+            rows[a] = hrow(a)
+        if f == 0:
+            out += rows[a]
+            continue
+        if b not in rows:
+            rows[b] = hrow(b)
+        fa = 256 - f
+        out += bytes(map(_lerp, rows[a], rows[b], repeat(fa), repeat(f)))
+    return bytes(out)
+
+
+def _resize_pixels(px, w, h, n, dw, dh):
+    kx, ky = max(1, w // dw), max(1, h // dh)
+    if kx > 1 or ky > 1:
+        px, w, h = _box_shrink(px, w, h, n, kx, ky)
+    return _bilinear(px, w, h, n, dw, dh)
+
+
+def _pil_from_file(path, max_side):
+    im = _PILImage.open(path)
+    try:
+        im = _PILOps.exif_transpose(im)  # photos taken sideways on a phone
+    except Exception:
+        pass
+    im.load()
+    alpha = im.mode in ("RGBA", "LA", "PA", "La", "RGBa") or (im.mode == "P" and "transparency" in im.info)
+    im = im.convert("RGBA" if alpha else "RGB")
+    if im.mode == "RGBA" and im.getextrema()[3][0] == 255:
+        im = im.convert("RGB")
+    if max(im.size) > max_side:
+        im.thumbnail((max_side, max_side), _LANCZOS)
+    buf = io.BytesIO()
+    im.save(buf, "PNG", optimize=True)
+    return buf.getvalue(), im.size
+
+
+# Windows can convert JPG/BMP/TIFF pictures itself (no Pillow needed) through PowerShell.
+_PS_CONVERT = r"""
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Drawing
+$src = '%(src)s'
+$dst = '%(dst)s'
+$max = %(max)d
+$img = [System.Drawing.Image]::FromFile($src)
+try {
+  if ($img.PropertyIdList -contains 274) {
+    $o = [int][BitConverter]::ToUInt16($img.GetPropertyItem(274).Value, 0)
+    $t = @{2='RotateNoneFlipX'; 3='Rotate180FlipNone'; 4='Rotate180FlipX'; 5='Rotate90FlipX';
+           6='Rotate90FlipNone'; 7='Rotate270FlipX'; 8='Rotate270FlipNone'}
+    if ($t.ContainsKey($o)) { $img.RotateFlip([System.Drawing.RotateFlipType]$t[$o]) }
+  }
+  $s = [Math]::Min(1.0, $max / [double][Math]::Max($img.Width, $img.Height))
+  $w = [Math]::Max(1, [int][Math]::Round($img.Width * $s))
+  $h = [Math]::Max(1, [int][Math]::Round($img.Height * $s))
+  $bmp = New-Object System.Drawing.Bitmap -ArgumentList $w, $h, ([System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+  $g = [System.Drawing.Graphics]::FromImage($bmp)
+  $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+  $g.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+  $g.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
+  $ia = New-Object System.Drawing.Imaging.ImageAttributes
+  $ia.SetWrapMode([System.Drawing.Drawing2D.WrapMode]::TileFlipXY)
+  $rect = New-Object System.Drawing.Rectangle -ArgumentList 0, 0, $w, $h
+  $g.DrawImage($img, $rect, 0, 0, $img.Width, $img.Height, [System.Drawing.GraphicsUnit]::Pixel, $ia)
+  $g.Dispose()
+  $bmp.Save($dst, [System.Drawing.Imaging.ImageFormat]::Png)
+  $bmp.Dispose()
+} finally {
+  $img.Dispose()
+}
+"""
+
+
+def _windows_convert(path, max_side):
+    """Convert any picture Windows understands to a resized PNG (bytes), or None."""
+    if os.name != "nt":
+        return None
+    tmp = tempfile.mkdtemp(prefix="circuit_pic_")
+    try:
+        dst = os.path.join(tmp, "picture.png")
+        script = _PS_CONVERT % {"src": os.path.abspath(path).replace("'", "''"),
+                                "dst": dst.replace("'", "''"), "max": max_side}
+        enc = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", enc],
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=60, startupinfo=si,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+        if os.path.isfile(dst):
+            with open(dst, "rb") as f:
+                return f.read()
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return None
+
+
+def _picture_dict(png):
+    w, h = png_size(png)
+    return {"data": base64.b64encode(png).decode("ascii"), "w": w, "h": h}
+
+
+def load_picture(path, max_side=PICTURE_MAX):
+    """Read a picture file -> {"data": base64 PNG, "w": .., "h": ..}.  Raises PictureError."""
+    if not os.path.isfile(path):
+        raise PictureError("The file could not be found:\n%s" % path)
+    if _PILImage is not None:
+        try:
+            return _picture_dict(_pil_from_file(path, max_side)[0])
+        except Exception:
+            pass
+    ext = os.path.splitext(path)[1].lower()
+    if ext in (".png", ".gif", ".ppm", ".pgm", ".pnm"):
+        try:
+            photo = tk.PhotoImage(file=path)
+            w, h, n, px = _premultiply(*_photo_pixels(photo))
+            del photo
+            if max(w, h) > max_side:
+                dw, dh = fit_size(w, h, max_side, max_side)
+                px, w, h = _resize_pixels(px, w, h, n, dw, dh), dw, dh
+            return _picture_dict(png_encode(_unpremultiply(n, px), w, h, n, level=9, up_filter=True))
+        except (tk.TclError, ValueError, zlib.error, struct.error):
+            pass
+    png = _windows_convert(path, max_side)
+    if png:
+        try:
+            return _picture_dict(png)
+        except (ValueError, struct.error):
+            pass
+    msg = ("Circuit Builder couldn't read this picture.\n\n"
+           "Save it as a PNG file and try again (for example, open it in Paint "
+           "and choose File › Save as › PNG picture).")
+    if os.name != "nt" and _PILImage is None:
+        msg += "\n\nInstalling Pillow (pip install pillow) also lets Circuit Builder open JPG files."
+    raise PictureError(msg)
+
+
+class PictureCache:
+    """Turns stored pictures into Tk images of any size.  Results are cached."""
+    LIMIT = 96
+
+    def __init__(self):
+        self._src = {}                 # picture key -> decoded picture
+        self._shrunk = OrderedDict()   # (key, kx, ky) -> block-averaged pixels (no-Pillow path)
+        self._photos = OrderedDict()   # (key, w, h) -> tk.PhotoImage (or None if it failed)
+        self.sources = {}              # Tk image name -> base64 PNG of the full picture (SVG export)
+
+    def photo(self, img, w, h, key=None):
+        key = key or picture_key(img)
+        k = (key, int(w), int(h))
+        if k in self._photos:
+            self._photos.move_to_end(k)
+            return self._photos[k]
+        try:
+            ph = self._make(key, img, int(w), int(h))
+        except Exception:
+            ph = None
+        self._photos[k] = ph
+        if ph is not None:
+            self.sources[str(ph)] = img["data"]
+        while len(self._photos) > self.LIMIT:
+            _k, old = self._photos.popitem(last=False)
+            if old is not None:
+                self.sources.pop(str(old), None)
+        return ph
+
+    def _make(self, key, img, w, h):
+        src = self._src.get(key)
+        if _PILImage is not None:
+            if src is None:
+                src = _PILImage.open(io.BytesIO(base64.b64decode(img["data"])))
+                src.load()
+                if src.mode not in ("RGB", "RGBA"):
+                    src = src.convert("RGBA")
+                self._src[key] = src
+            im = src if src.size == (w, h) else src.resize((w, h), _LANCZOS)
+            buf = io.BytesIO()
+            im.save(buf, "PNG", compress_level=1)
+            return tk.PhotoImage(data=buf.getvalue())
+        if src is None:
+            photo = tk.PhotoImage(data=img["data"])
+            src = _premultiply(*_photo_pixels(photo))
+            del photo
+            self._src[key] = src
+        sw, sh, n, px = src
+        kx, ky = max(1, sw // w), max(1, sh // h)
+        if kx > 1 or ky > 1:
+            sk = (key, kx, ky)
+            if sk not in self._shrunk:
+                self._shrunk[sk] = _box_shrink(px, sw, sh, n, kx, ky)
+                while len(self._shrunk) > 24:
+                    self._shrunk.popitem(last=False)
+            px, sw, sh = self._shrunk[sk]
+        out = _bilinear(px, sw, sh, n, w, h)
+        return tk.PhotoImage(data=png_encode(_unpremultiply(n, out), w, h, n, level=1))
+
+
+PICTURES = PictureCache()
+
+
+def picture_photo(img, max_w, max_h, key=None):
+    """Tk image of a stored picture, scaled to fit inside max_w x max_h pixels."""
+    w, h = fit_size(img["w"], img["h"], max(1, max_w), max(1, max_h))
+    return PICTURES.photo(img, w, h, key)
+
+
 class Library:
     def __init__(self):
         self.path = os.path.join(data_dir(), "my_components" + LIB_EXT)
@@ -940,7 +1535,9 @@ def fit_preview(cv, rd, fam, label=None, value=None, max_zoom=1.4):
 class ComponentEditor(tk.Toplevel):
     SIDES = ["left", "right", "top", "bottom"]
 
-    def __init__(self, app, d=None, duplicate=False):
+    def __init__(self, app, d=None, duplicate=False, image=None, use_for=None):
+        """image: start with this picture.  use_for: id of a placed part that should switch
+        to the saved component (used when adding a picture to a built-in part)."""
         super().__init__(app.root)
         self.app = app
         self.fam = app.fam
@@ -948,16 +1545,23 @@ class ComponentEditor(tk.Toplevel):
         self.title("Component Editor — " + APP_NAME)
         self.configure(bg=C["bg"])
         self.transient(app.root)
-        self.geometry("%dx%d" % (int(1100 * s), int(660 * s)))
-        self.minsize(int(960 * s), int(600 * s))
+        self.geometry("%dx%d" % (int(1100 * s), int(700 * s)))
+        self.minsize(int(960 * s), int(640 * s))
         d = copy.deepcopy(d) if d else {"name": "", "category": "My Components", "prefix": "U",
                                         "value": "", "description": "", "color": BODY_COLORS[0],
                                         "pins": [], "symbol": "box", "w": 4, "h": 3}
         self.edit_id = d.get("id") if (d.get("custom") and not duplicate) else None
+        self.source_name = d.get("name", "")
+        self.use_for = use_for
+        if image is not None:
+            d["image"] = image
         if duplicate:
-            d["name"] = d.get("name", "") + " (copy)"
+            if image is None:
+                d["name"] = d.get("name", "") + " (copy)"
             if not d.get("custom"):
                 d["category"] = "My Components"
+        self.image = d.get("image") if valid_picture(d.get("image")) else None
+        self._thumb = None
         self.rows = self._rows_from_def(d)
         self._sync = False
 
@@ -1007,7 +1611,8 @@ class ComponentEditor(tk.Toplevel):
                              "side": SIDE_OF_DIR.get(p.get("dir", "L"), "left")})
         return rows
 
-    def _needed_size(self):
+    def _needed_size(self, picture=True):
+        """Smallest size that fits the pins and name (and, if picture=True, the picture)."""
         sides = {s: [r for r in self.rows if r["side"] == s] for s in self.SIDES}
         def maxlen(s):
             return max([len(r["name"]) for r in sides[s] if r["kind"] == "pin"] or [0])
@@ -1019,6 +1624,9 @@ class ComponentEditor(tk.Toplevel):
         name_len = len(name.get()) if name else 8
         text_w = min(name_len, 16) * 6.3 + 14 + (maxlen("left") + maxlen("right")) * 5.4 + 18
         need_w = max(max(nT, nB) + 1, int(math.ceil(text_w / G)), 3)
+        if picture and self.image:
+            pw, ph = picture_auto_size(self.image, {s: pin_label_room(maxlen(s)) for s in self.SIDES})
+            need_w, need_h = max(need_w, pw), max(need_h, ph)
         return need_w, max(need_h, 2)
 
     def build_def(self):
@@ -1026,8 +1634,9 @@ class ComponentEditor(tk.Toplevel):
         if self.v_auto.get():
             w, h = need_w, need_h
         else:
+            min_w, min_h = self._needed_size(picture=False)
             try:
-                w, h = max(need_w, int(self.v_w.get())), max(need_h, int(self.v_h.get()))
+                w, h = max(min_w, int(self.v_w.get())), max(min_h, int(self.v_h.get()))
             except (tk.TclError, ValueError):
                 w, h = need_w, need_h
         counts = {s: sum(1 for r in self.rows if r["side"] == s) for s in self.SIDES}
@@ -1041,12 +1650,15 @@ class ComponentEditor(tk.Toplevel):
             idx[s] += 1
             if r["kind"] == "pin":
                 pins.append({"name": r["name"], "side": s, "pos": pos})
-        return {"id": self.edit_id or "preview", "name": self.v_name.get().strip() or "New Part",
-                "category": self.v_cat.get().strip() or "My Components",
-                "prefix": re.sub(r"[^A-Za-z_]", "", self.v_prefix.get()) or "U",
-                "value": self.v_value.get().strip(),
-                "description": self.t_desc.get("1.0", "end").strip(),
-                "symbol": "box", "w": w, "h": h, "color": self.v_color.get(), "pins": pins}
+        d = {"id": self.edit_id or "preview", "name": self.v_name.get().strip() or "New Part",
+             "category": self.v_cat.get().strip() or "My Components",
+             "prefix": re.sub(r"[^A-Za-z_]", "", self.v_prefix.get()) or "U",
+             "value": self.v_value.get().strip(),
+             "description": self.t_desc.get("1.0", "end").strip(),
+             "symbol": "box", "w": w, "h": h, "color": self.v_color.get(), "pins": pins}
+        if self.image:
+            d["image"] = self.image
+        return d
 
     # ---- UI ----
     def _build(self, d):
@@ -1098,6 +1710,26 @@ class ComponentEditor(tk.Toplevel):
             f.bind("<Button-1>", lambda e, c=col: self.v_color.set(c))
             self.swatches.append((f, col))
         ttk.Button(sw, text="…", width=3, command=self._pick_color).grid(row=0, column=len(BODY_COLORS), padx=(4, 0))
+
+        sc = self.app.ui_scale
+        ttk.Label(left, text="Picture", style="Card.TLabel").grid(row=r, column=0, sticky="w", pady=(12, 2))
+        r += 1
+        pf = ttk.Frame(left, style="Inner.TFrame")
+        pf.grid(row=r, column=0, columnspan=2, sticky="w")
+        r += 1
+        self.pic_cv = tk.Canvas(pf, width=int(110 * sc), height=int(72 * sc), bg=C["canvas"], cursor="hand2",
+                                highlightthickness=1, highlightbackground=C["border"])
+        self.pic_cv.grid(row=0, column=0, rowspan=2, padx=(0, 10))
+        tip = Tooltip(self.pic_cv, "Click to choose a picture")
+        self.pic_cv.bind("<Button-1>", lambda e: (tip._leave(), self._choose_picture()))
+        self.b_pic = ttk.Button(pf, text="Choose…", command=self._choose_picture)
+        self.b_pic.grid(row=0, column=1, sticky="ew")
+        self.b_pic_rm = ttk.Button(pf, text="Remove", command=self._remove_picture)
+        self.b_pic_rm.grid(row=1, column=1, sticky="ew", pady=(4, 0))
+        ttk.Label(left, text="Optional. A photo or drawing of the part (PNG, JPG …) shown inside it.",
+                  style="Hint.TLabel", wraplength=int(230 * sc), justify="left").grid(
+            row=r, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        r += 1
 
         ttk.Label(left, text="Size (grid squares)", style="Card.TLabel").grid(row=r, column=0, sticky="w", pady=(12, 2))
         r += 1
@@ -1183,12 +1815,49 @@ class ComponentEditor(tk.Toplevel):
         self.pv_info.pack(anchor="w")
 
         bar = ttk.Frame(self, style="Bg.TFrame", padding=(12, 0, 12, 12))
-        bar.pack(fill="x")
+        bar.pack(side="bottom", fill="x", before=outer)  # keep the buttons visible on small screens
         ttk.Button(bar, text="Save to library", style="Accent.TButton", command=self._save).pack(side="right")
         ttk.Button(bar, text="Cancel", command=self.destroy).pack(side="right", padx=(0, 8))
+        note = None
         if self.edit_id:
-            ttk.Label(bar, text="Changes also update every copy of this part in your circuit.",
-                      style="Status.TLabel").pack(side="left")
+            note = "Changes also update every copy of this part in your circuit."
+        elif self.use_for in self.app.comps:
+            note = ("“%s” is built in, so this saves your own copy with the picture, and %s will use it."
+                    % (self.source_name, self.app.comps[self.use_for].get("label") or "the selected part"))
+        if note:
+            ttk.Label(bar, text=note, style="Status.TLabel").pack(side="left")
+        self._show_picture()
+
+    def _show_picture(self):
+        cv = self.pic_cv
+        cv.delete("all")
+        W, H = int(cv.cget("width")), int(cv.cget("height"))
+        self._thumb = picture_photo(self.image, W - 8, H - 8) if self.image else None
+        if self._thumb is not None:
+            cv.create_image(W / 2.0 + 1, H / 2.0 + 1, image=self._thumb, anchor="center")
+            self.b_pic.configure(text="Change…")
+            self.b_pic_rm.state(["!disabled"])
+        else:
+            cv.create_text(W / 2.0, H / 2.0, text="No picture\n(click to add)", fill=C["muted"],
+                           font=(self.fam, 8), justify="center")
+            self.b_pic.configure(text="Choose…")
+            self.b_pic_rm.state(["!disabled"] if self.image else ["disabled"])
+
+    def _choose_picture(self):
+        path = filedialog.askopenfilename(parent=self, title="Choose a picture for this part",
+                                          filetypes=PICTURE_FILETYPES)
+        if not path:
+            return
+        pic = self.app.read_picture(path, parent=self)
+        if pic:
+            self.image = pic
+            self._show_picture()
+            self._changed()
+
+    def _remove_picture(self):
+        self.image = None
+        self._show_picture()
+        self._changed()
 
     def _pick_color(self):
         c = colorchooser.askcolor(color=self.v_color.get(), parent=self, title="Body color")
@@ -1322,7 +1991,7 @@ class ComponentEditor(tk.Toplevel):
             messagebox.showwarning(APP_NAME, "Every pin needs a name.", parent=self)
             return
         d["id"] = self.edit_id or ("custom_" + uuid.uuid4().hex[:10])
-        self.app.save_definition(d)
+        self.app.save_definition(d, use_for=self.use_for)
         self.destroy()
 
 
@@ -2354,6 +3023,9 @@ class App:
         m = tk.Menu(self.root, tearoff=0)
         m.add_command(label="Add to circuit", command=self._lib_add)
         m.add_command(label="Edit…" if rd.custom else "Copy & edit…", command=self.edit_lib_def)
+        if self.can_add_picture(rd.id):
+            m.add_command(label=("Change picture…" if rd.image else "Add picture…") if rd.custom
+                          else "Copy with a picture…", command=lambda: self.add_picture(rd.id))
         if rd.custom:
             m.add_command(label="Delete from library", command=self.delete_lib_def)
         try:
@@ -2981,7 +3653,7 @@ class App:
             ("1", "Drag a part from the left onto the canvas (or double-click it)."),
             ("2", "Click a pin (small circle), then click a pin on another part to connect them."),
             ("3", "While wiring, click empty space to add bends."),
-            ("4", "Click a part to change its label and value here."),
+            ("4", "Click a part to change its label and value here, or give it a picture."),
             ("5", "Need a part that isn’t listed? Use  + New Component."),
         ]
         sf = ttk.Frame(f, style="Panel.TFrame")
@@ -3006,9 +3678,28 @@ class App:
         self.prop_title.grid(row=0, column=0, columnspan=2, sticky="w")
         ttk.Label(f, text="%s · %s%s" % (rd.name, rd.category, "  ★ custom" if rd.custom else ""),
                   style="Muted.TLabel", wraplength=wl).grid(row=1, column=0, columnspan=2, sticky="w")
+        info = ttk.Frame(f, style="Panel.TFrame")
+        info.grid(row=2, column=0, columnspan=2, sticky="ew")
+        if rd.image:
+            iw, ih = rd.image["w"], rd.image["h"]
+            mw = min(wl, int(iw * 2 * self.ui_scale))
+            mh = min(int(120 * self.ui_scale), int(ih * 2 * self.ui_scale))
+            ph = picture_photo(rd.image, mw, mh, rd.image_key)
+            if ph is not None:
+                pl = tk.Label(info, image=ph, bg=C["panel"], bd=0, cursor="hand2")
+                pl.image = ph
+                pl.pack(anchor="w", pady=(8, 2))
+                tip = Tooltip(pl, "Click to see the picture bigger")
+                pl.bind("<Button-1>", lambda e, r=rd, t=tip: (t._leave(), self.show_picture(r)))
         if rd.description:
-            ttk.Label(f, text=rd.description, style="Hint.TLabel", wraplength=wl, justify="left").grid(
-                row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
+            ttk.Label(info, text=rd.description, style="Hint.TLabel", wraplength=wl, justify="left").pack(
+                anchor="w", pady=(4, 0))
+        if self.can_add_picture(c["def"]):
+            pb = ttk.Button(info, text="Change picture…" if rd.image else "Add picture…",
+                            command=lambda: self.add_picture(c["def"], use_for=cid))
+            pb.pack(anchor="w", pady=(6, 0))
+            Tooltip(pb, "Show a photo or drawing of the part inside it" if rd.custom
+                    else "Saves your own copy of this part with a picture")
         self._head("Properties", 3)
         v_label = tk.StringVar(value=c.get("label", ""))
         v_value = tk.StringVar(value=c.get("value", ""))
@@ -3061,6 +3752,33 @@ class App:
             ttk.Button(f, text="Edit component type…", command=self.edit_selected_def).grid(
                 row=14, column=0, columnspan=2, sticky="w", pady=(8, 0))
         f.columnconfigure(0, weight=1)
+
+    def show_picture(self, rd):
+        """Small window with the part's picture at full size."""
+        if not rd.image:
+            return
+        win = tk.Toplevel(self.root)
+        win.title("%s — %s" % (rd.name, APP_NAME))
+        win.configure(bg=C["panel"])
+        win.transient(self.root)
+        s = self.ui_scale
+        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        ph = picture_photo(rd.image, min(int(rd.image["w"] * s), sw - 120), min(int(rd.image["h"] * s), sh - 160),
+                           rd.image_key)
+        if ph is None:
+            win.destroy()
+            return
+        lbl = tk.Label(win, image=ph, bg=C["panel"], bd=0)
+        lbl.image = ph
+        lbl.pack(padx=14, pady=(14, 6))
+        ttk.Label(win, text=rd.name, style="Card.TLabel").pack(pady=(0, 12))
+        win.bind("<Escape>", lambda e: win.destroy())
+        win.bind("<Button-1>", lambda e: win.destroy())
+        win.update_idletasks()
+        x = self.root.winfo_rootx() + (self.root.winfo_width() - win.winfo_reqwidth()) // 2
+        y = self.root.winfo_rooty() + (self.root.winfo_height() - win.winfo_reqheight()) // 3
+        win.geometry("+%d+%d" % (max(0, x), max(0, y)))
+        win.focus_set()
 
     def focus_label_entry(self):
         if self.prop_vars:
@@ -3184,8 +3902,54 @@ class App:
             self.library.delete(did)
             self.populate_library()
 
-    def save_definition(self, d):
-        """Called by the editor. Adds/updates a custom definition and remaps existing wires."""
+    @staticmethod
+    def _pin_mapping(old_names, new_pins):
+        """Old pin number -> new pin number, matching pins by name."""
+        avail = {}
+        for i, p in enumerate(new_pins):
+            avail.setdefault(p["name"], []).append(i)
+        mapping, used = {}, {}
+        for i, n in enumerate(old_names):
+            lst = avail.get(n, [])
+            k = used.get(n, 0)
+            if k < len(lst):
+                mapping[i] = lst[k]
+                used[n] = k + 1
+        return mapping
+
+    def _remap_wires(self, cids, mapping):
+        """Move wire ends on these parts to the new pin numbers; remove wires whose pin is gone."""
+        dropped = 0
+        for wid in list(self.wires):
+            w = self.wires[wid]
+            ok = True
+            for end in ("a", "b"):
+                if w[end][0] in cids:
+                    if w[end][1] in mapping:
+                        w[end][1] = mapping[w[end][1]]
+                    else:
+                        ok = False
+            if not ok:
+                del self.wires[wid]
+                dropped += 1
+        return dropped
+
+    def _switch_type(self, cid, did):
+        """Make one placed part use another component type, keeping wires on same-named pins."""
+        c = self.comps[cid]
+        old_names = [p["name"] for p in self.rdef(c).pins]
+        new = self.library.resolve(did)
+        self.checkpoint()
+        c["def"] = did
+        dropped = self._remap_wires({cid}, self._pin_mapping(old_names, new.pins))
+        self.sel = {("c", cid)}
+        self.changed()
+        return dropped
+
+    def save_definition(self, d, use_for=None):
+        """Called by the editor. Adds/updates a custom definition and remaps existing wires.
+        use_for: a placed part that should switch to this definition."""
+        self.commit_props()
         old = self.library.resolve(d["id"]) if self.library.get(d["id"]) else None
         old_names = [p["name"] for p in old.pins] if old else None
         self.library.save_def(d)
@@ -3194,39 +3958,64 @@ class App:
         users = [cid for cid, c in self.comps.items() if c["def"] == d["id"]]
         if old_names is not None and users:
             self.checkpoint()
-            avail = {}
-            for i, p in enumerate(new.pins):
-                avail.setdefault(p["name"], []).append(i)
-            mapping, used = {}, {}
-            for i, n in enumerate(old_names):
-                lst = avail.get(n, [])
-                k = used.get(n, 0)
-                if k < len(lst):
-                    mapping[i] = lst[k]
-                    used[n] = k + 1
-            ucs = set(users)
-            for wid in list(self.wires):
-                w = self.wires[wid]
-                ok = True
-                for end in ("a", "b"):
-                    if w[end][0] in ucs:
-                        if w[end][1] in mapping:
-                            w[end][1] = mapping[w[end][1]]
-                        else:
-                            ok = False
-                if not ok:
-                    del self.wires[wid]
-                    dropped += 1
+            dropped = self._remap_wires(set(users), self._pin_mapping(old_names, new.pins))
             self.changed()
+        switched = None
+        if use_for in self.comps and self.comps[use_for]["def"] != d["id"]:
+            dropped += self._switch_type(use_for, d["id"])
+            switched = self.comps[use_for].get("label") or d["name"]
         self.populate_library()
         if self.lib_tree.exists("def:" + d["id"]):
             self.lib_tree.selection_set("def:" + d["id"])
             self.lib_tree.see("def:" + d["id"])
         self.request_redraw()
+        self.refresh_props()
         msg = "Saved “%s” to your library." % d["name"]
+        if switched:
+            msg += " %s now uses it." % switched
         if dropped:
             msg += " %d wire%s removed because a pin was deleted or renamed." % (dropped, "" if dropped == 1 else "s")
         self.flash(msg, 6000)
+
+    def read_picture(self, path, parent=None):
+        """Load a picture file for a component; shows a message and returns None if it fails."""
+        parent = parent or self.root
+        try:
+            parent.configure(cursor="watch")
+            parent.update_idletasks()
+        except tk.TclError:
+            pass
+        try:
+            return load_picture(path)
+        except PictureError as e:
+            messagebox.showerror(APP_NAME, str(e), parent=parent)
+            return None
+        finally:
+            try:
+                parent.configure(cursor="")
+            except tk.TclError:
+                pass
+
+    def can_add_picture(self, did):
+        """Pictures go on box-shaped parts.  Built-in schematic symbols keep their standard drawing."""
+        d = self.library.get(did)
+        return bool(d) and (d.get("custom") or d.get("symbol", "box") == "box")
+
+    def add_picture(self, did, use_for=None):
+        """Choose a picture file, then open the Component Editor with it so the result can be checked
+        before saving.  Built-in parts get saved as the student's own copy."""
+        self.commit_props()
+        d = self.library.get(did)
+        if not d:
+            return
+        path = filedialog.askopenfilename(parent=self.root, title="Choose a picture for “%s”" % d.get("name", "part"),
+                                          filetypes=PICTURE_FILETYPES)
+        if not path:
+            return
+        pic = self.read_picture(path)
+        if pic:
+            ComponentEditor(self, d, duplicate=not d.get("custom"), image=pic,
+                            use_for=None if d.get("custom") else use_for)
 
     def import_library(self):
         path = filedialog.askopenfilename(title="Import components", filetypes=[
@@ -3703,7 +4492,8 @@ def canvas_to_svg(cv, skip_tags=("grid", "hint", "overlay")):
             xs0.append(b[0]); ys0.append(b[1]); xs1.append(b[2]); ys1.append(b[3])
     m = 16
     X0, Y0, X1, Y1 = min(xs0) - m, min(ys0) - m, max(xs1) + m, max(ys1) + m
-    out = ['<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="%.1f %.1f %.1f %.1f">'
+    out = ['<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" '
+           'width="%d" height="%d" viewBox="%.1f %.1f %.1f %.1f">'
            % (X1 - X0, Y1 - Y0, X0, Y0, X1 - X0, Y1 - Y0),
            '<rect x="%.1f" y="%.1f" width="%.1f" height="%.1f" fill="white"/>' % (X0, Y0, X1 - X0, Y1 - Y0)]
     dpi = cv.winfo_fpixels("1i")
@@ -3736,6 +4526,24 @@ def canvas_to_svg(cv, skip_tags=("grid", "hint", "overlay")):
             da = ' stroke-dasharray="%s"' % dash.replace(" ", ",") if dash else ""
             out.append('<rect x="%.1f" y="%.1f" width="%.1f" height="%.1f" fill="%s" stroke="%s" stroke-width="%.2f"%s/>'
                        % (co[0], co[1], co[2] - co[0], co[3] - co[1], col("fill"), col("outline"), width, da))
+        elif t == "image":
+            name = cv.itemcget(i, "image")
+            data = PICTURES.sources.get(name)
+            if not data:
+                continue
+            try:
+                iw = int(cv.tk.call("image", "width", name))
+                ih = int(cv.tk.call("image", "height", name))
+            except (tk.TclError, ValueError):
+                continue
+            anchor = cv.itemcget(i, "anchor")
+            if anchor in ("", "center"):
+                anchor = ""
+            fx = 0.0 if "w" in anchor else 1.0 if "e" in anchor else 0.5
+            fy = 0.0 if "n" in anchor else 1.0 if "s" in anchor else 0.5
+            # embed the full-size picture so it stays sharp when the SVG is enlarged
+            out.append('<image x="%.1f" y="%.1f" width="%d" height="%d" preserveAspectRatio="none" '
+                       'xlink:href="data:image/png;base64,%s"/>' % (co[0] - fx * iw, co[1] - fy * ih, iw, ih, data))
         elif t == "text":
             text = cv.itemcget(i, "text")
             if not text:
@@ -3821,11 +4629,14 @@ def _app_show_help(self):
         "5.  Tools › Show connections lists every net (pins that share the same voltage).\n"
         "6.  Tools › Check circuit warns about shorts and parts that aren’t connected.\n"
         "7.  Make your own parts with  + New Component : give it a name, list its pins and\n"
-        "     choose which side each pin is on. It’s saved in your library for next time.\n\n"
+        "     choose which side each pin is on. It’s saved in your library for next time.\n"
+        "8.  Give a part a picture (a photo of the real module, say): click the part, then\n"
+        "     Add picture… on the right, or use Picture › Choose… in the Component Editor.\n\n"
         "Good to know\n"
         "•  All Ground symbols are connected together, and so are Power Rails with the same value.\n"
         "•  A filled pin is connected; a hollow pin is still free.\n"
-        "•  Files are saved as .circuit and include any custom parts they use, so you can share them.\n"
+        "•  Files are saved as .circuit and include any custom parts they use (with their pictures),\n"
+        "    so you can share them.\n"
         "•  File › Export image saves an SVG you can put in a lab report.")
     ttk.Label(f, text=text, style="Panel.TLabel", justify="left").pack(anchor="w", pady=(8, 12))
     ttk.Label(f, text="Keyboard & mouse", style="Card.TLabel").pack(anchor="w")

@@ -14,6 +14,7 @@ Drag parts onto a grid, click pin-to-pin to wire them, and create your own parts
 2. Double-click **`Run Circuit Builder.bat`**.
 
 Nothing else needs installing; the app only uses Python's built-in Tkinter.
+Optional: `pip install pillow` makes part pictures a little smoother and lets the app open WebP pictures too.
 
 **Option B: make a stand-alone `.exe` (to share with a class)**
 
@@ -33,6 +34,7 @@ Click **More info → Run anyway**.
 | Add corners to a wire | While wiring, click empty grid squares on the way. Backspace removes the last corner |
 | Reshape a wire later | Double-click the wire to add a bend, then drag the white square |
 | Edit label / value | Click the part and type in the panel on the right (e.g. `R1`, `4.7 kΩ`) |
+| Give a part a picture | Click the part, then **Add picture…** in the panel on the right (see below) |
 | Rotate / flip | **R** (Shift+R rotates the other way), **F** to flip |
 | Delete | Select and press **Delete** (deleting a part also deletes its wires) |
 | Copy, paste, duplicate | **Ctrl+C**, **Ctrl+V**, **Ctrl+D** |
@@ -50,7 +52,7 @@ You can put a ground symbol wherever it's convenient instead of running long wir
 
 Click **+ New Component** (top right), then:
 
-1. **Details**: name, category, label prefix (`U` → U1, U2 …), optional default value and body color.
+1. **Details**: name, category, label prefix (`U` → U1, U2 …), optional default value, body color and picture.
 2. **Pins**: type a pin name, pick the side it sticks out of (left, right, top or bottom) and press Enter.
    Type several names at once separated by commas, e.g. `VCC, GND, SDA, SCL`.
    Use **Move up/down** to reorder and **Add gap** to leave space between groups of pins.
@@ -60,6 +62,24 @@ Click **+ New Component** (top right), then:
 Your parts appear under their category (marked ★) and are remembered for next time.
 To start from an existing part (e.g. turn the Arduino Uno into a Mega), select it and click **Edit…**; built-in parts open as a copy.
 If you change a part that's already in your circuit, the wires stay attached to pins with the same name.
+
+## Pictures on parts
+
+Any box-shaped part (your own parts, and built-in boards and modules like the Arduino Uno, servo or relay) can show a picture, such as a photo of the real module.
+The picture sits in the middle of the part with the label underneath, and the pins stay where they are.
+
+- **On the canvas:** click the part, then click **Add picture…** (or **Change picture…**) in the panel on the right and choose the file.
+  The Component Editor opens with a preview; click **Save to library**.
+  For a built-in part this saves your own copy (★) with the picture, and the part you clicked switches to it with its wires kept.
+- **In the Component Editor:** use **Picture › Choose…** or click the empty picture box. **Remove** takes it off again.
+- **In the parts list:** right-click a part and choose **Add picture…** (built-in parts: **Copy with a picture…**).
+
+PNG, JPG, GIF and BMP pictures all work on Windows. Large photos are shrunk to 400 pixels when you add them, so files stay small.
+With **Size → Automatic** ticked, the part grows to make room for the picture; untick it to set the size yourself.
+Click the picture in the right-hand panel to see it bigger.
+Schematic symbols (resistor, LED, logic gates …) keep their standard drawing. To make a picture version, select one in the list, click **Edit…** to make your own copy, and add the picture there.
+
+Pictures are saved inside the part, so they travel with `.cblib` and `.circuit` files and appear in **Export image (SVG)**.
 
 **Sharing parts:** *Components › Export my components* saves a `.cblib` file. Classmates load it with *Components › Import components*.
 Circuit files also carry the custom parts they use, so opening someone's `.circuit` file adds their parts to your library automatically.
@@ -71,7 +91,7 @@ Circuit files also carry the custom parts they use, so opening someone's `.circu
   Click a net to highlight it on the drawing. Export it as text, CSV (Excel), or a basic **SPICE** netlist for R, C, L, sources, diodes, LEDs and BJTs.
 - **Check circuit** warns about shorted batteries and sources, parts that are shorted or not connected, free pins, and a missing ground.
   Double-click a message to jump to that part.
-- **File › Export image (SVG)** saves a clean drawing for lab reports. It opens in any browser, Word or PowerPoint.
+- **File › Export image (SVG)** saves a clean drawing for lab reports, pictures included. It opens in any browser, Word or PowerPoint.
 
 ## Built-in parts
 
