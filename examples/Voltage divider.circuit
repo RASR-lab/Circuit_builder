@@ -1,0 +1,165 @@
+{
+  "format": "circuit-builder",
+  "version": 1,
+  "components": [
+    {
+      "id": "c1",
+      "def": "dc_source",
+      "x": 4,
+      "y": 6,
+      "rot": 0,
+      "flip": false,
+      "label": "V1",
+      "value": "10 V",
+      "notes": ""
+    },
+    {
+      "id": "c2",
+      "def": "resistor",
+      "x": 10,
+      "y": 4,
+      "rot": 1,
+      "flip": false,
+      "label": "R1",
+      "value": "10 kΩ",
+      "notes": ""
+    },
+    {
+      "id": "c3",
+      "def": "resistor",
+      "x": 10,
+      "y": 9,
+      "rot": 1,
+      "flip": false,
+      "label": "R2",
+      "value": "10 kΩ",
+      "notes": ""
+    },
+    {
+      "id": "c4",
+      "def": "voltmeter",
+      "x": 15,
+      "y": 9,
+      "rot": 1,
+      "flip": false,
+      "label": "VM1",
+      "value": "",
+      "notes": ""
+    },
+    {
+      "id": "c5",
+      "def": "ground",
+      "x": 4,
+      "y": 10,
+      "rot": 0,
+      "flip": false,
+      "label": "GND1",
+      "value": "",
+      "notes": ""
+    },
+    {
+      "id": "c6",
+      "def": "ground",
+      "x": 10,
+      "y": 13,
+      "rot": 0,
+      "flip": false,
+      "label": "GND2",
+      "value": "",
+      "notes": ""
+    },
+    {
+      "id": "c7",
+      "def": "ground",
+      "x": 15,
+      "y": 13,
+      "rot": 0,
+      "flip": false,
+      "label": "GND3",
+      "value": "",
+      "notes": ""
+    }
+  ],
+  "wires": [
+    {
+      "id": "w1",
+      "a": [
+        "c1",
+        0
+      ],
+      "b": [
+        "c2",
+        0
+      ],
+      "bends": [],
+      "color": "#dc2626"
+    },
+    {
+      "id": "w2",
+      "a": [
+        "c2",
+        1
+      ],
+      "b": [
+        "c3",
+        0
+      ],
+      "bends": [],
+      "color": "#2563eb"
+    },
+    {
+      "id": "w3",
+      "a": [
+        "c3",
+        0
+      ],
+      "b": [
+        "c4",
+        0
+      ],
+      "bends": [],
+      "color": "#16a34a"
+    },
+    {
+      "id": "w4",
+      "a": [
+        "c3",
+        1
+      ],
+      "b": [
+        "c6",
+        0
+      ],
+      "bends": [],
+      "color": "#1f2933"
+    },
+    {
+      "id": "w5",
+      "a": [
+        "c4",
+        1
+      ],
+      "b": [
+        "c7",
+        0
+      ],
+      "bends": [],
+      "color": "#1f2933"
+    },
+    {
+      "id": "w6",
+      "a": [
+        "c1",
+        1
+      ],
+      "b": [
+        "c5",
+        0
+      ],
+      "bends": [],
+      "color": "#1f2933"
+    }
+  ],
+  "definitions": [],
+  "app_version": "1.0"
+}

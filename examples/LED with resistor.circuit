@@ -1,0 +1,117 @@
+{
+  "format": "circuit-builder",
+  "version": 1,
+  "components": [
+    {
+      "id": "c1",
+      "def": "dc_source",
+      "x": 4,
+      "y": 6,
+      "rot": 0,
+      "flip": false,
+      "label": "V1",
+      "value": "9 V",
+      "notes": ""
+    },
+    {
+      "id": "c2",
+      "def": "resistor",
+      "x": 9,
+      "y": 2,
+      "rot": 0,
+      "flip": false,
+      "label": "R1",
+      "value": "470 Ω",
+      "notes": ""
+    },
+    {
+      "id": "c3",
+      "def": "led",
+      "x": 17,
+      "y": 5,
+      "rot": 1,
+      "flip": false,
+      "label": "D1",
+      "value": "Red",
+      "notes": ""
+    },
+    {
+      "id": "c4",
+      "def": "ground",
+      "x": 4,
+      "y": 10,
+      "rot": 0,
+      "flip": false,
+      "label": "GND1",
+      "value": "",
+      "notes": ""
+    },
+    {
+      "id": "c5",
+      "def": "ground",
+      "x": 17,
+      "y": 9,
+      "rot": 0,
+      "flip": false,
+      "label": "GND2",
+      "value": "",
+      "notes": ""
+    }
+  ],
+  "wires": [
+    {
+      "id": "w1",
+      "a": [
+        "c1",
+        0
+      ],
+      "b": [
+        "c2",
+        0
+      ],
+      "bends": [],
+      "color": "#dc2626"
+    },
+    {
+      "id": "w2",
+      "a": [
+        "c2",
+        1
+      ],
+      "b": [
+        "c3",
+        0
+      ],
+      "bends": [],
+      "color": "#2563eb"
+    },
+    {
+      "id": "w3",
+      "a": [
+        "c3",
+        1
+      ],
+      "b": [
+        "c5",
+        0
+      ],
+      "bends": [],
+      "color": "#1f2933"
+    },
+    {
+      "id": "w4",
+      "a": [
+        "c1",
+        1
+      ],
+      "b": [
+        "c4",
+        0
+      ],
+      "bends": [],
+      "color": "#1f2933"
+    }
+  ],
+  "definitions": [],
+  "app_version": "1.0"
+}

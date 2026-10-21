@@ -1,0 +1,117 @@
+{
+  "format": "circuit-builder",
+  "version": 1,
+  "components": [
+    {
+      "id": "c1",
+      "def": "arduino_uno",
+      "x": 6,
+      "y": 10,
+      "rot": 0,
+      "flip": false,
+      "label": "U1",
+      "value": "",
+      "notes": ""
+    },
+    {
+      "id": "c2",
+      "def": "resistor",
+      "x": 15,
+      "y": 17,
+      "rot": 0,
+      "flip": false,
+      "label": "R1",
+      "value": "220 Ω",
+      "notes": ""
+    },
+    {
+      "id": "c3",
+      "def": "led",
+      "x": 20,
+      "y": 20,
+      "rot": 1,
+      "flip": false,
+      "label": "D1",
+      "value": "Green",
+      "notes": ""
+    },
+    {
+      "id": "c4",
+      "def": "ground",
+      "x": 20,
+      "y": 24,
+      "rot": 0,
+      "flip": false,
+      "label": "GND1",
+      "value": "",
+      "notes": ""
+    },
+    {
+      "id": "c5",
+      "def": "ground",
+      "x": -1,
+      "y": 10,
+      "rot": 0,
+      "flip": false,
+      "label": "GND2",
+      "value": "",
+      "notes": ""
+    }
+  ],
+  "wires": [
+    {
+      "id": "w1",
+      "a": [
+        "c1",
+        25
+      ],
+      "b": [
+        "c2",
+        0
+      ],
+      "bends": [],
+      "color": "#2563eb"
+    },
+    {
+      "id": "w2",
+      "a": [
+        "c2",
+        1
+      ],
+      "b": [
+        "c3",
+        0
+      ],
+      "bends": [],
+      "color": "#16a34a"
+    },
+    {
+      "id": "w3",
+      "a": [
+        "c3",
+        1
+      ],
+      "b": [
+        "c4",
+        0
+      ],
+      "bends": [],
+      "color": "#1f2933"
+    },
+    {
+      "id": "w4",
+      "a": [
+        "c1",
+        3
+      ],
+      "b": [
+        "c5",
+        0
+      ],
+      "bends": [],
+      "color": "#1f2933"
+    }
+  ],
+  "definitions": [],
+  "app_version": "1.0"
+}

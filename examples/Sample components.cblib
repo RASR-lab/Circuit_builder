@@ -1,0 +1,161 @@
+{
+  "format": "circuit-builder-library",
+  "version": 1,
+  "components": [
+    {
+      "id": "sample_hc05",
+      "name": "HC-05 Bluetooth Module",
+      "category": "Sample Parts",
+      "prefix": "BT",
+      "value": "",
+      "description": "Serial Bluetooth module. Cross TXD/RXD with the microcontroller.",
+      "symbol": "box",
+      "color": "#ede9fe",
+      "custom": true,
+      "pins": [
+        {
+          "name": "VCC",
+          "side": "left",
+          "pos": 1
+        },
+        {
+          "name": "GND",
+          "side": "left",
+          "pos": 2
+        },
+        {
+          "name": "TXD",
+          "side": "left",
+          "pos": 3
+        },
+        {
+          "name": "RXD",
+          "side": "left",
+          "pos": 4
+        },
+        {
+          "name": "STATE",
+          "side": "right",
+          "pos": 2
+        },
+        {
+          "name": "EN",
+          "side": "right",
+          "pos": 3
+        }
+      ],
+      "w": 8,
+      "h": 5
+    },
+    {
+      "id": "sample_l298n",
+      "name": "L298N Motor Driver",
+      "category": "Sample Parts",
+      "prefix": "U",
+      "value": "",
+      "description": "Dual H-bridge for two DC motors. ENA/ENB take PWM for speed.",
+      "symbol": "box",
+      "color": "#fde2e4",
+      "custom": true,
+      "pins": [
+        {
+          "name": "12V",
+          "side": "left",
+          "pos": 1
+        },
+        {
+          "name": "GND",
+          "side": "left",
+          "pos": 2
+        },
+        {
+          "name": "5V",
+          "side": "left",
+          "pos": 3
+        },
+        {
+          "name": "ENA",
+          "side": "left",
+          "pos": 4
+        },
+        {
+          "name": "IN1",
+          "side": "left",
+          "pos": 5
+        },
+        {
+          "name": "IN2",
+          "side": "left",
+          "pos": 6
+        },
+        {
+          "name": "IN3",
+          "side": "left",
+          "pos": 7
+        },
+        {
+          "name": "IN4",
+          "side": "left",
+          "pos": 8
+        },
+        {
+          "name": "ENB",
+          "side": "left",
+          "pos": 9
+        },
+        {
+          "name": "OUT1",
+          "side": "right",
+          "pos": 3
+        },
+        {
+          "name": "OUT2",
+          "side": "right",
+          "pos": 4
+        },
+        {
+          "name": "OUT3",
+          "side": "right",
+          "pos": 5
+        },
+        {
+          "name": "OUT4",
+          "side": "right",
+          "pos": 6
+        }
+      ],
+      "w": 8,
+      "h": 10
+    },
+    {
+      "id": "sample_dht11",
+      "name": "DHT11 Humidity Sensor",
+      "category": "Sample Parts",
+      "prefix": "U",
+      "value": "",
+      "description": "Temperature and humidity sensor with a single data pin.",
+      "symbol": "box",
+      "color": "#fef3c7",
+      "custom": true,
+      "pins": [
+        {
+          "name": "VCC",
+          "side": "left",
+          "pos": 1
+        },
+        {
+          "name": "DATA",
+          "side": "left",
+          "pos": 2
+        },
+        {
+          "name": "GND",
+          "side": "left",
+          "pos": 3
+        }
+      ],
+      "w": 7,
+      "h": 4
+    }
+  ]
+}
