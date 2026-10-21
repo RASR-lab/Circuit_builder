@@ -1,0 +1,6 @@
+# PyInstaller output and scratch files
+build/
+dist/
+*.spec.bak
+__pycache__/
+*.pyc
