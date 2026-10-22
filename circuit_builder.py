@@ -52,7 +52,7 @@ except Exception:  # Pillow not installed: pictures still work (PNG/GIF, plus JP
     _PILOps = None
 
 APP_NAME = "Circuit Builder"
-APP_VERSION = "1.3"
+APP_VERSION = "1.5"
 FILE_EXT = ".circuit"
 LIB_EXT = ".cblib"
 G = 24  # pixels per grid unit at 100 % zoom
@@ -494,7 +494,49 @@ def sym_not():
             L((0, 1), (1, 1)), L((3.9, 1), (5, 1))]
 
 
+QBAR = "Q'"   # name of the inverted output pin ("Q-bar"; the symbol draws it as Q with a bar over it)
+
+
+def _ff_box(h):
+    """Rectangle body of a flip-flop / latch, h grid squares tall, between x = 1 and x = 5."""
+    return PG((1, 1), (5, 1), (5, h), (1, h), fill="white")
+
+
+def _ff_outputs(yq, yqb):
+    return [L((5, yq), (6, yq)), L((5, yqb), (6, yqb)),
+            TX(4.45, yq, "Q", 10), TX(4.45, yqb, "Q", 10), L((4.27, yqb - 0.36), (4.63, yqb - 0.36), w=0.8)]
+
+
+def _ff_clock(y):
+    """Clock input: lead plus the triangle that marks an edge-triggered input."""
+    return [L((0, y), (1, y)), PG((1, y - 0.38), (1.5, y), (1, y + 0.38))]
+
+
+def _ff_set_clr(bottom):
+    return [L((3, 0), (3, 1)), L((3, bottom), (3, bottom + 1)),
+            TX(3, 1.42, "SET", 7), TX(3, bottom - 0.42, "CLR", 7)]
+
+
+def sym_dff(letter="D"):
+    return ([_ff_box(6), L((0, 2), (1, 2)), TX(1.5, 2, letter, 10)] + _ff_clock(5)
+            + _ff_outputs(2, 5) + _ff_set_clr(6))
+
+
+def sym_tff():
+    return sym_dff("T")
+
+
+def sym_jkff():
+    return ([_ff_box(7), L((0, 2), (1, 2)), TX(1.45, 2, "J", 10), L((0, 6), (1, 6)), TX(1.5, 6, "K", 10)]
+            + _ff_clock(4) + _ff_outputs(2, 6) + _ff_set_clr(7))
+
+
+def sym_srlatch():
+    return [_ff_box(6), L((0, 2), (1, 2)), TX(1.5, 2, "S", 10), L((0, 5), (1, 5)), TX(1.5, 5, "R", 10)] + _ff_outputs(2, 5)
+
+
 SYMBOLS = {
+    "dff": sym_dff, "tff": sym_tff, "jkff": sym_jkff, "srlatch": sym_srlatch,
     "resistor": sym_resistor, "capacitor": sym_capacitor, "capacitor_pol": sym_capacitor_pol,
     "inductor": sym_inductor, "potentiometer": sym_potentiometer, "ldr": sym_ldr,
     "fuse": sym_fuse, "switch": sym_switch, "pushbutton": sym_pushbutton, "lamp": sym_lamp,
@@ -514,7 +556,7 @@ ALT_SYMBOLS = {"switch": sym_switch_closed, "pushbutton": sym_pushbutton_pressed
 # Built-in component library
 # --------------------------------------------------------------------------
 CATEGORY_ORDER = ["Passive", "Sources & Meters", "Switches & Outputs", "Semiconductors",
-                  "Logic Gates", "ICs & Boards", "Modules & Sensors"]
+                  "Logic Gates", "Flip-Flops & Latches", "Logic ICs (74HC)", "ICs & Boards", "Modules & Sensors"]
 
 
 def two_term(a="1", b="2"):
@@ -538,6 +580,23 @@ def BX(id_, name, cat, prefix, value, desc, w, h, pins, color="#e5e7eb", **kw):
 
 
 GATE2 = [P("A", 0, 1, "L"), P("B", 0, 3, "L"), P("Y", 5, 2, "R")]
+
+
+def DIP14(id_, name, desc, pins, logic):
+    """A 14-pin 74HC logic chip drawn in its real pin order (pin 1 top-left, pin 14 top-right)."""
+    side = [(n, "left", i + 1) for i, n in enumerate(pins[:7])] + \
+           [(n, "right", 7 - i) for i, n in enumerate(pins[7:])]
+    return BX(id_, name, "Logic ICs (74HC)", "U", "",
+              desc + " Pins are in the chip’s real order: pin 1 top-left, 7 = GND bottom-left, "
+                     "14 = VCC top-right. Wire VCC to +5 V and GND to ground, or it won’t work.",
+              6, 8, side, color="#e5e7eb", logic=logic)
+
+
+def _quad(fmt):
+    return "".join(fmt.format(n=n) + "\n" for n in "1234")
+
+
+_PIN_QUAD = ["1A", "1B", "1Y", "2A", "2B", "2Y", "GND", "3Y", "3A", "3B", "4Y", "4A", "4B", "VCC"]
 VERT2 = [P("+", 1, 0, "U"), P("−", 1, 4, "D")]
 
 BUILTIN_DEFS = [
@@ -631,6 +690,54 @@ BUILTIN_DEFS = [
        pins=GATE2, pivot=(2, 2)),
     SY("not", "NOT Gate (Inverter)", "Logic Gates", "U", "", "Output is the opposite of the input.",
        pins=[P("A", 0, 1, "L"), P("Y", 5, 1, "R")], pivot=(2, 1)),
+    # Flip-flops & latches (5 V logic; SET and CLR are optional and active-HIGH)
+    SY("dff", "D Flip-Flop", "Flip-Flops & Latches", "FF", "",
+       "Stores one bit. On each rising edge of CLK (LOW → HIGH), Q copies D and holds it until the next "
+       "edge. Q' (Q-bar) is always the opposite of Q. SET forces Q = 1 and CLR forces Q = 0 at any time; "
+       "leave them unconnected if you don't need them.",
+       pins=[P("D", 0, 2, "L"), P("CLK", 0, 5, "L"), P("Q", 6, 2, "R"), P(QBAR, 6, 5, "R"),
+             P("SET", 3, 0, "U"), P("CLR", 3, 7, "D")], pivot=(3, 3), label_pt=[6.3, 3.5],
+       optional_pins=["SET", "CLR", QBAR]),
+    SY("tff", "T Flip-Flop", "Flip-Flops & Latches", "FF", "",
+       "Toggle flip-flop. On each rising edge of CLK, Q flips (0 → 1 or 1 → 0) if T is HIGH, and stays the "
+       "same if T is LOW. Tie T HIGH to divide a clock by 2; chain them to build a counter. SET / CLR "
+       "force Q to 1 / 0.",
+       pins=[P("T", 0, 2, "L"), P("CLK", 0, 5, "L"), P("Q", 6, 2, "R"), P(QBAR, 6, 5, "R"),
+             P("SET", 3, 0, "U"), P("CLR", 3, 7, "D")], pivot=(3, 3), label_pt=[6.3, 3.5],
+       optional_pins=["SET", "CLR", QBAR]),
+    SY("jkff", "JK Flip-Flop", "Flip-Flops & Latches", "FF", "",
+       "On each rising edge of CLK: J = K = 0 holds Q, J = 1 sets Q = 1, K = 1 resets Q = 0, and "
+       "J = K = 1 toggles Q. SET / CLR force Q to 1 / 0 at any time.",
+       pins=[P("J", 0, 2, "L"), P("CLK", 0, 4, "L"), P("K", 0, 6, "L"), P("Q", 6, 2, "R"), P(QBAR, 6, 6, "R"),
+             P("SET", 3, 0, "U"), P("CLR", 3, 8, "D")], pivot=(3, 4), label_pt=[6.3, 4],
+       optional_pins=["SET", "CLR", QBAR]),
+    SY("srlatch", "SR Latch", "Flip-Flops & Latches", "FF", "",
+       "The simplest memory: S = 1 sets Q = 1, R = 1 resets Q = 0, and with both at 0 it remembers. "
+       "No clock. S = R = 1 is not allowed (both outputs go to 0).",
+       pins=[P("S", 0, 2, "L"), P("R", 0, 5, "L"), P("Q", 6, 2, "R"), P(QBAR, 6, 5, "R")], pivot=(3, 3),
+       optional_pins=[QBAR]),
+    # Logic ICs: real 74HC chips, simulated from their logic equations
+    DIP14("74hc00", "74HC00 Quad NAND", "Four 2-input NAND gates.", _PIN_QUAD,
+          "# Four NAND gates\n" + _quad("{n}Y = !({n}A & {n}B)")),
+    DIP14("74hc02", "74HC02 Quad NOR", "Four 2-input NOR gates (note: outputs come first on this chip).",
+          ["1Y", "1A", "1B", "2Y", "2A", "2B", "GND", "3A", "3B", "3Y", "4A", "4B", "4Y", "VCC"],
+          "# Four NOR gates\n" + _quad("{n}Y = !({n}A | {n}B)")),
+    DIP14("74hc04", "74HC04 Hex Inverter", "Six NOT gates.",
+          ["1A", "1Y", "2A", "2Y", "3A", "3Y", "GND", "4Y", "4A", "5Y", "5A", "6Y", "6A", "VCC"],
+          "# Six NOT gates\n" + "".join("%dY = !%dA\n" % (n, n) for n in range(1, 7))),
+    DIP14("74hc08", "74HC08 Quad AND", "Four 2-input AND gates.", _PIN_QUAD,
+          "# Four AND gates\n" + _quad("{n}Y = {n}A & {n}B")),
+    DIP14("74hc32", "74HC32 Quad OR", "Four 2-input OR gates.", _PIN_QUAD,
+          "# Four OR gates\n" + _quad("{n}Y = {n}A | {n}B")),
+    DIP14("74hc86", "74HC86 Quad XOR", "Four 2-input XOR gates.", _PIN_QUAD,
+          "# Four XOR gates\n" + _quad("{n}Y = {n}A ^ {n}B")),
+    DIP14("74hc74", "74HC74 Dual D Flip-Flop",
+          "Two rising-edge D flip-flops. PRE and CLR are active-LOW: connect them to VCC for normal use "
+          "(a LOW on PRE sets Q = 1, a LOW on CLR clears Q = 0).",
+          ["1CLR", "1D", "1CLK", "1PRE", "1Q", "1Q'", "GND", "2Q'", "2Q", "2PRE", "2CLK", "2D", "2CLR", "VCC"],
+          "# Two D flip-flops. PRE and CLR are active-LOW.\n"
+          + "".join("{n}Q = 1 when !{n}PRE\n{n}Q = 0 when !{n}CLR\n{n}Q = {n}D on {n}CLK\n{n}Q' = !{n}Q\n".format(n=n)
+                    for n in "12")),
     # ICs & boards
     BX("arduino_uno", "Arduino Uno", "ICs & Boards", "U", "",
        "ATmega328P microcontroller board. D0–D13 digital pins, A0–A5 analog inputs.",
@@ -1861,6 +1968,482 @@ def fit_preview(cv, rd, fam, label=None, value=None, max_zoom=1.4):
 
 
 # --------------------------------------------------------------------------
+# Chip logic: Boolean equations that make a part simulate as a digital chip
+# --------------------------------------------------------------------------
+# A part's "logic" is plain text, one statement per line, for example
+#
+#     Y = A & B                 # an output that follows its inputs (combinational)
+#     Q = D on CLK              # Q takes the value of D on each rising edge of CLK
+#     Q = 0 when !CLR           # while CLR is LOW, Q is forced to 0 (overrides the clock)
+#     S = A ^ B                 # XOR;  !A  ~A  A'  not A  all mean NOT A
+#
+# Names are the part's pin names; any other name on the left of "=" is an internal signal.
+# Pins called VCC / GND (and similar) power the chip: outputs swing between them.
+
+LOGIC_HELP = (
+    "One statement per line.  # starts a comment.\n"
+    "\n"
+    "Y = A & B          output follows its inputs\n"
+    "Q = D on CLK       Q takes D at each rising edge of CLK\n"
+    "Q = D on fall CLK  … at each falling edge instead\n"
+    "Q = 1 when !PRE    forced while the condition is 1\n"
+    "Q = D when EN      a latch: follows D while EN is 1\n"
+    "\n"
+    "AND   A & B    A * B    A and B\n"
+    "OR    A | B    A + B    A or B\n"
+    "XOR   A ^ B    A xor B\n"
+    "NOT   !A   ~A   A'   not A\n"
+    "Constants 0 and 1.  Brackets ( ) group.\n"
+    "Order: NOT first, then AND, then XOR, then OR.\n"
+    "\n"
+    "Use the pin names exactly. Write a name with spaces\n"
+    "or symbols in quotes, e.g. \"D0 RX\".\n"
+    "Other names on the left of = are internal signals.\n"
+    "Pins named VCC and GND power the chip.")
+
+LOGIC_TEMPLATES = [
+    ("Quad 2-input NAND (like 74HC00)",
+     ["1A", "1B", "1Y", "2A", "2B", "2Y", "GND", "3Y", "3A", "3B", "4Y", "4A", "4B", "VCC"],
+     "# Four NAND gates. VCC and GND power the chip.\n"
+     "1Y = !(1A & 1B)\n2Y = !(2A & 2B)\n3Y = !(3A & 3B)\n4Y = !(4A & 4B)\n"),
+    ("Half adder", ["A", "B", "SUM", "CARRY"],
+     "# Adds two bits\nSUM = A ^ B\nCARRY = A & B\n"),
+    ("Full adder", ["A", "B", "CIN", "SUM", "COUT"],
+     "# Adds two bits plus a carry in\nSUM = A ^ B ^ CIN\nCOUT = (A & B) | (CIN & (A ^ B))\n"),
+    ("2-to-1 multiplexer", ["A", "B", "SEL", "Y"],
+     "# Y = A when SEL is 0, B when SEL is 1\nY = (A & !SEL) | (B & SEL)\n"),
+    ("2-to-4 decoder", ["A0", "A1", "EN", "Y0", "Y1", "Y2", "Y3"],
+     "# Exactly one output is 1 (while EN is 1)\n"
+     "Y0 = EN & !A1 & !A0\nY1 = EN & !A1 & A0\nY2 = EN & A1 & !A0\nY3 = EN & A1 & A0\n"),
+    ("Majority vote (3 inputs)", ["A", "B", "C", "Y"],
+     "# 1 when at least two inputs are 1\nY = (A & B) | (A & C) | (B & C)\n"),
+    ("D latch", ["D", "EN", "Q", "Q'"],
+     "# Q follows D while EN is 1, and holds when EN goes to 0\nQ = D when EN\nQ' = !Q\n"),
+    ("D flip-flop with reset", ["D", "CLK", "RST", "Q", "Q'"],
+     "# Q takes D on each rising edge of CLK; RST = 1 clears it\nQ = 0 when RST\nQ = D on CLK\nQ' = !Q\n"),
+    ("4-bit binary counter", ["CLK", "RST", "Q0", "Q1", "Q2", "Q3"],
+     "# Counts 0, 1, 2 … 15 on each rising edge of CLK. RST = 1 clears it.\n"
+     "Q0 = 0 when RST\nQ1 = 0 when RST\nQ2 = 0 when RST\nQ3 = 0 when RST\n"
+     "Q0 = !Q0 on CLK\nQ1 = Q1 ^ Q0 on CLK\nQ2 = Q2 ^ (Q1 & Q0) on CLK\nQ3 = Q3 ^ (Q2 & Q1 & Q0) on CLK\n"),
+    ("4-bit shift register", ["DIN", "CLK", "Q0", "Q1", "Q2", "Q3"],
+     "# On each rising edge every bit moves one place along\n"
+     "Q0 = DIN on CLK\nQ1 = Q0 on CLK\nQ2 = Q1 on CLK\nQ3 = Q2 on CLK\n"),
+    ("Traffic light sequencer", ["CLK", "RED", "AMBER", "GREEN"],
+     "# Steps RED → GREEN → AMBER → RED on each clock edge (two internal state bits)\n"
+     "S0 = !S0 & !S1 on CLK\nS1 = S0 on CLK\n"
+     "RED = !S0 & !S1\nGREEN = S0\nAMBER = S1\n"),
+]
+
+
+class LogicError(Exception):
+    def __init__(self, msg, line=None):
+        Exception.__init__(self, msg)
+        self.msg = msg
+        self.line = line
+
+    def __str__(self):
+        return ("Line %d: %s" % (self.line, self.msg)) if self.line else self.msg
+
+
+_KEYWORDS = {"and": "AND", "or": "OR", "xor": "XOR", "not": "NOT", "on": "ON", "when": "WHEN", "if": "WHEN",
+             "rise": "RISE", "rising": "RISE", "fall": "FALL", "falling": "FALL"}
+_OPS = {"&": "AND", "*": "AND", "·": "AND", "∧": "AND", "|": "OR", "+": "OR", "∨": "OR", "^": "XOR", "⊕": "XOR",
+        "!": "NOT", "~": "NOT", "¬": "NOT", "'": "POST", "’": "POST", "(": "(", ")": ")", "=": "="}
+_IDENT_RX = re.compile(r"[A-Za-z0-9_]+")
+
+
+def _ident_char(ch):
+    return ch.isalnum() or ch == "_"
+
+
+def _tokenize(s, pin_names, line):
+    """Split one statement into (kind, value) tokens.  Pin names (even ones with symbols) win."""
+    names = sorted({n for n in pin_names if n}, key=len, reverse=True)
+    out, i, n = [], 0, len(s)
+    while i < n:
+        ch = s[i]
+        if ch.isspace():
+            i += 1
+            continue
+        if ch in "\"“”":
+            j = i + 1
+            while j < n and s[j] not in "\"“”":
+                j += 1
+            if j >= n:
+                raise LogicError("a name in quotes is missing its closing \"", line)
+            out.append(("NAME", s[i + 1:j].strip()))
+            i = j + 1
+            continue
+        if s.startswith(":=", i) or s.startswith("<=", i):
+            out.append(("=", "="))
+            i += 2
+            continue
+        hit = None
+        for nm in names:
+            if s.startswith(nm, i) and (i + len(nm) >= n or not (_ident_char(s[i + len(nm)]) and _ident_char(nm[-1]))):
+                if _ident_char(nm[0]) and i > 0 and _ident_char(s[i - 1]):
+                    continue
+                hit = nm
+                break
+        m = _IDENT_RX.match(s, i)
+        word = m.group(0) if m else None
+        if word and word in _KEYWORDS and not (hit and len(hit) > len(word)):
+            out.append((_KEYWORDS[word], word))
+            i += len(word)
+            continue
+        if hit and (not word or len(hit) >= len(word)):
+            out.append(("NAME", hit))
+            i += len(hit)
+            continue
+        if word:
+            if word.isdigit():
+                if word not in ("0", "1"):
+                    raise LogicError("only the numbers 0 and 1 can be used (found %s)" % word, line)
+                out.append(("NUM", int(word)))
+            else:
+                out.append(("NAME", word))
+            i += len(word)
+            continue
+        if ch in _OPS:
+            out.append((_OPS[ch], ch))
+            i += 1
+            continue
+        raise LogicError("didn’t understand “%s”" % ch, line)
+    return out
+
+
+class _Parser:
+    def __init__(self, toks, line):
+        self.t = toks
+        self.i = 0
+        self.line = line
+        self.used = []
+
+    def peek(self):
+        return self.t[self.i][0] if self.i < len(self.t) else None
+
+    def take(self, kind=None):
+        if self.i >= len(self.t):
+            raise LogicError("the line ends too early" + (" (expected %s)" % kind.lower() if kind and kind != "NAME" else ""), self.line)
+        tok = self.t[self.i]
+        if kind and tok[0] != kind:
+            raise LogicError("expected %s but found “%s”" % ({"NAME": "a name", ")": "“)”", "=": "“=”"}.get(kind, kind.lower()),
+                                                             tok[1]), self.line)
+        self.i += 1
+        return tok
+
+    # expr := xor ('OR' xor)* ; xor := and ('XOR' and)* ; and := unary ('AND' unary)*
+    def expr(self):
+        a = self.xor()
+        while self.peek() == "OR":
+            self.take()
+            a = ("or", a, self.xor())
+        return a
+
+    def xor(self):
+        a = self.and_()
+        while self.peek() == "XOR":
+            self.take()
+            a = ("xor", a, self.and_())
+        return a
+
+    def and_(self):
+        a = self.unary()
+        while self.peek() == "AND":
+            self.take()
+            a = ("and", a, self.unary())
+        return a
+
+    def unary(self):
+        if self.peek() == "NOT":
+            self.take()
+            return ("not", self.unary())
+        a = self.atom()
+        while self.peek() == "POST":
+            self.take()
+            a = ("not", a)
+        return a
+
+    def atom(self):
+        k = self.peek()
+        if k == "(":
+            self.take()
+            a = self.expr()
+            self.take(")")
+            return a
+        if k == "NUM":
+            return ("num", self.take()[1])
+        if k == "NAME":
+            nm = self.take()[1]
+            self.used.append(nm)
+            return ("name", nm)
+        if k is None:
+            raise LogicError("the line ends too early", self.line)
+        tok = self.t[self.i]
+        if tok[0] == "NAME" or tok[1].isalnum():
+            raise LogicError("expected a signal name but found “%s”" % tok[1], self.line)
+        raise LogicError("expected a signal name, 0, 1 or “(” but found “%s”" % tok[1], self.line)
+
+
+def _code(node, idx):
+    k = node[0]
+    if k == "num":
+        return str(node[1])
+    if k == "name":
+        return "s[%d]" % idx[node[1]]
+    if k == "not":
+        return "(1-%s)" % _code(node[1], idx)
+    op = {"and": "&", "or": "|", "xor": "^"}[k]
+    return "(%s%s%s)" % (_code(node[1], idx), op, _code(node[2], idx))
+
+
+class LogicProgram:
+    """Parsed chip logic, ready to evaluate.  pins: the part's pin names in order."""
+
+    def __init__(self, text, pins):
+        self.text = text or ""
+        self.pins = list(pins)
+        self.power = [p for p in self.pins if is_power_pin(p)]
+        self.ground = [p for p in self.pins if is_ground_pin(p)]
+        stmts = []
+        for ln, raw in enumerate(self.text.splitlines(), 1):
+            line = re.split(r"#|//", raw, 1)[0]
+            for part in line.split(";"):
+                if part.strip():
+                    stmts.append((ln, part))
+        self.comb, self.when, self.clocked = {}, {}, {}
+        used = []
+        targets_line = {}
+        for ln, src in stmts:
+            toks = _tokenize(src, self.pins, ln)
+            if len(toks) < 3 or toks[0][0] != "NAME" or toks[1][0] != "=":
+                if toks and toks[0][0] == "NAME" and (len(toks) < 2 or toks[1][0] != "="):
+                    raise LogicError("expected “=” after %s (write it like  Y = A & B)" % toks[0][1], ln)
+                raise LogicError("each line should look like  Y = A & B", ln)
+            name = toks[0][1]
+            if name in self.power or name in self.ground:
+                raise LogicError("%s is a power pin, so it can’t be set by the logic" % name, ln)
+            p = _Parser(toks, ln)
+            p.i = 2
+            ex = p.expr()
+            kind, extra = "comb", None
+            if p.peek() == "ON":
+                p.take()
+                edge = "rise"
+                if p.peek() in ("RISE", "FALL"):
+                    edge = "rise" if p.take()[0] == "RISE" else "fall"
+                paren = p.peek() == "("
+                if paren:
+                    p.take()
+                clk = p.take("NAME")[1]
+                if paren:
+                    p.take(")")
+                p.used.append(clk)
+                kind, extra = "clocked", (clk, edge)
+            elif p.peek() == "WHEN":
+                p.take()
+                kind, extra = "when", p.expr()
+            if p.peek() is not None:
+                tok = p.t[p.i]
+                hint = ""
+                if tok[0] == "NAME" and p.t[p.i - 1][0] == "NAME":
+                    hint = " (put an operator such as & or | between two names)"
+                raise LogicError("didn’t expect “%s” here%s" % (tok[1], hint), ln)
+            used += [(u, ln) for u in p.used]
+            prev = targets_line.get(name)
+            if kind == "comb":
+                if prev is not None:
+                    raise LogicError("%s is already set on line %d. A signal that follows its inputs can only be "
+                                     "set once." % (name, prev[0]), ln)
+                self.comb[name] = (ex, ln)
+            else:
+                if prev is not None and prev[1] == "comb":
+                    raise LogicError("%s is already set on line %d without “on” or “when”." % (name, prev[0]), ln)
+                if kind == "clocked":
+                    if name in self.clocked:
+                        raise LogicError("%s already has a clock on line %d" % (name, self.clocked[name][2]), ln)
+                    self.clocked[name] = (ex, extra, ln)
+                else:
+                    self.when.setdefault(name, []).append((ex, extra, ln))
+            targets_line.setdefault(name, (ln, kind))
+        if not stmts:
+            raise LogicError("there is no logic yet")
+        assigned = set(targets_line)
+        dup = {p for p in self.pins if self.pins.count(p) > 1 and not (is_power_pin(p) or is_ground_pin(p))}
+        for nm, ln in used:
+            if nm not in assigned and nm not in self.pins:
+                hint = ""
+                if len(nm) > 1 and all(c in self.pins for c in nm):
+                    hint = " To AND signals together write %s." % " & ".join(nm)
+                else:
+                    close = [p for p in self.pins if p.lower() == nm.lower()]
+                    if close:
+                        hint = " Did you mean %s? Names must match exactly." % close[0]
+                raise LogicError("there is no pin or signal called %s.%s" % (nm, hint), ln)
+            if nm in self.power or nm in self.ground:
+                raise LogicError("%s is a power pin; use a logic input instead" % nm, ln)
+        for nm in list(assigned) + [u for u, _ in used]:
+            if nm in dup:
+                raise LogicError("more than one pin is called %s, so the logic can’t tell them apart. "
+                                 "Rename the pins first." % nm, targets_line.get(nm, (None,))[0])
+        self.states = [n for n in assigned if n not in self.comb]
+        self.outputs = [p for p in dict.fromkeys(self.pins) if p in assigned]
+        self.internal = [n for n in assigned if n not in self.pins]
+        self.inputs = [p for p in dict.fromkeys(self.pins) if p not in assigned and p in {u for u, _ in used}]
+        self.clocks = list(dict.fromkeys(c for (_e, (c, _g), _l) in self.clocked.values()))
+        self.names = list(dict.fromkeys(self.inputs + self.outputs + self.internal))
+        idx = {n: i for i, n in enumerate(self.names)}
+        self.idx = idx
+        # combinational signals in an order where each only uses ones computed before it
+        deps = {n: {u for u in self._names_in(e) if u in self.comb} for n, (e, _l) in self.comb.items()}
+        order, done, visiting = [], set(), []
+
+        def visit(n):
+            if n in done:
+                return
+            if n in visiting:
+                loop = visiting[visiting.index(n):] + [n]
+                raise LogicError("%s depend on each other in a loop (%s). Break the loop with a clock "
+                                 "(“on CLK”) or a latch (“when”)." % (" and ".join(sorted(set(loop))), " → ".join(loop)),
+                                 self.comb[n][1])
+            visiting.append(n)
+            for m in sorted(deps[n]):
+                visit(m)
+            visiting.pop()
+            done.add(n)
+            order.append(n)
+
+        for n in self.comb:
+            visit(n)
+        comp = lambda e: compile(_code(e, idx), "<logic>", "eval")
+        self.comb_code = [(idx[n], comp(self.comb[n][0])) for n in order]
+        self.when_code = {n: [(comp(e), comp(c)) for e, c, _l in lst] for n, lst in self.when.items()}
+        self.clock_code = {n: (comp(e), idx[c], g) for n, (e, (c, g), _l) in self.clocked.items()}
+        self.state_idx = [idx[n] for n in self.states]
+
+    @staticmethod
+    def _names_in(e):
+        if e[0] == "name":
+            return {e[1]}
+        if e[0] == "num":
+            return set()
+        return set().union(*(LogicProgram._names_in(x) for x in e[1:]))
+
+    @staticmethod
+    def _ev(code, s):
+        return eval(code, {"__builtins__": {}}, {"s": s}) & 1
+
+    def settle(self, s):
+        for i, code in self.comb_code:
+            s[i] = self._ev(code, s)
+
+    def step(self, s, prev_clk):
+        """s: values (inputs already set, states hold their stored values).  prev_clk: {index: level}
+        from the previous call (updated here).  Computes new states and outputs.  Returns s."""
+        for _round in range(16):
+            self.settle(s)
+            edges = {}
+            for name in self.clocks:
+                i = self.idx[name]
+                old = prev_clk.get(i)
+                edges[i] = (None if old is None else ("rise" if (not old and s[i]) else "fall" if (old and not s[i]) else None))
+                prev_clk[i] = s[i]
+            new = {}
+            for name in self.states:
+                i = self.idx[name]
+                val = None
+                for e, c in self.when_code.get(name, ()):
+                    if self._ev(c, s):
+                        val = self._ev(e, s)
+                        break
+                if val is None and name in self.clock_code:
+                    e, ci, g = self.clock_code[name]
+                    if edges.get(ci) == g:
+                        val = self._ev(e, s)
+                if val is not None and val != s[i]:
+                    new[i] = val
+            for i, v in new.items():
+                s[i] = v
+            self.settle(s)
+            # a state change may have moved an internal clock (e.g. a ripple counter): go round again
+            again = any(prev_clk.get(self.idx[c]) != s[self.idx[c]] for c in self.clocks)
+            if not new or not again:
+                break
+        return s
+
+    def summary(self):
+        parts = []
+        if self.inputs:
+            parts.append("Inputs: " + ", ".join(self.inputs))
+        if self.outputs:
+            parts.append("Outputs: " + ", ".join(self.outputs))
+        if self.internal:
+            parts.append("Internal: " + ", ".join(self.internal))
+        if self.power or self.ground:
+            parts.append("Power: " + ", ".join(dict.fromkeys(self.power + self.ground)))
+        else:
+            parts.append("No VCC/GND pins: runs as 5 V logic")
+        return "   ·   ".join(parts)
+
+    def truth_table(self, limit=8):
+        """(columns, rows) for the table shown in the editor, or (None, message) when it is too big."""
+        clock_only = [c for c in self.clocks if c in self.inputs and
+                      all(c not in self._names_in(e) for e, _l in self.comb.values()) and
+                      all(c not in self._names_in(e) and c not in self._names_in(cn)
+                          for lst in self.when.values() for e, cn, _l in lst) and
+                      all(c not in self._names_in(e) for e, _c, _l in self.clocked.values())]
+        ins = [n for n in self.inputs if n not in clock_only]
+        st = list(self.states)
+        variables = ins + st
+        if len(variables) > limit:
+            return None, ("Too many inputs for a table (%d). Up to %d fit; try the part in the simulator instead."
+                          % (len(variables), limit))
+        comb_names = [nm for nm in self.names if nm in self.comb]
+        cols = ([(n, "in") for n in ins] + [(n + " now", "in") for n in st]
+                + [(n, "out") for n in comb_names]
+                + [(n + (" after %s%s" % (self.clocked[n][1][0], "↑" if self.clocked[n][1][1] == "rise" else "↓")
+                         if n in self.clocked else " next"), "out") for n in st])
+        rows = []
+        for k in range(2 ** len(variables)):
+            s = [0] * len(self.names)
+            bits = [(k >> (len(variables) - 1 - j)) & 1 for j in range(len(variables))]
+            for n, b in zip(variables, bits):
+                s[self.idx[n]] = b
+            self.settle(s)
+            out = [s[self.idx[n]] for n in comb_names]
+            nxt = []
+            for n in st:
+                val = None
+                for e, c in self.when_code.get(n, ()):
+                    if self._ev(c, s):
+                        val = self._ev(e, s)
+                        break
+                if val is None and n in self.clock_code:
+                    val = self._ev(self.clock_code[n][0], s)
+                nxt.append(s[self.idx[n]] if val is None else val)
+            rows.append(bits + out + nxt)
+        return cols, rows
+
+
+_LOGIC_CACHE = {}
+
+
+def logic_program(text, pins):
+    """Cached LogicProgram (or the LogicError it raises)."""
+    key = (text, tuple(pins))
+    if key not in _LOGIC_CACHE:
+        if len(_LOGIC_CACHE) > 200:
+            _LOGIC_CACHE.clear()
+        try:
+            _LOGIC_CACHE[key] = LogicProgram(text, pins)
+        except LogicError as e:
+            _LOGIC_CACHE[key] = e
+        except RecursionError:
+            _LOGIC_CACHE[key] = LogicError("an equation is too deeply nested")
+    return _LOGIC_CACHE[key]
+
+
+# --------------------------------------------------------------------------
 # Component editor
 # --------------------------------------------------------------------------
 class ComponentEditor(tk.Toplevel):
@@ -1894,6 +2477,7 @@ class ComponentEditor(tk.Toplevel):
             if not d.get("custom"):
                 d["category"] = "My Components"
         self.image = d.get("image") if valid_picture(d.get("image")) else None
+        self.logic = d.get("logic", "") or ""
         self._thumb = None
         self.rows = self._rows_from_def(d)
         self._sync = False
@@ -1996,7 +2580,54 @@ class ComponentEditor(tk.Toplevel):
             d["image"] = self.image
         if self.sim_model:
             d["sim"] = self.sim_model
+        if self.logic.strip():
+            d["logic"] = self.logic
         return d
+
+    # ---- logic ----
+    def _pin_names(self):
+        return [r["name"] for r in self.rows if r["kind"] == "pin" and r["name"]]
+
+    def _edit_logic(self):
+        LogicDialog(self)
+
+    def set_logic(self, text):
+        self.logic = text or ""
+        self._changed()
+
+    def add_logic_pins(self, names, text):
+        """Add pins that a logic example needs: inputs left, outputs right, VCC top, GND bottom."""
+        try:
+            prog = LogicProgram(text, self._pin_names() + list(names))
+            outs = set(prog.outputs)
+        except LogicError:
+            outs = set()
+        for nm in names:
+            side = ("top" if is_power_pin(nm) else "bottom" if is_ground_pin(nm)
+                    else "right" if nm in outs else "left")
+            self.rows.append({"kind": "pin", "name": nm, "side": side})
+        self._refresh_rows()
+
+    def _logic_status(self):
+        lbl = getattr(self, "logic_lbl", None)
+        if lbl is None:
+            return
+        if not self.logic.strip():
+            if self.sim_model:
+                txt, col = ("Simulates like the built-in part it was copied from. Add logic equations to "
+                            "replace that with your own behaviour."), C["muted"]
+            else:
+                txt, col = ("None yet. Add logic equations (like  Y = A & B) to make this part work as a "
+                            "digital chip in the simulator."), C["muted"]
+            self.b_logic.configure(text="Add logic…")
+        else:
+            prog = logic_program(self.logic, self._pin_names())
+            if isinstance(prog, LogicError):
+                txt, col = "⚠  " + str(prog), C["danger"]
+            else:
+                txt, col = "✓  " + prog.summary(), C["ok"]
+            self.b_logic.configure(text="Edit logic…")
+        lbl.configure(text=txt, foreground=col)
 
     # ---- UI ----
     def _build(self, d):
@@ -2145,6 +2776,16 @@ class ComponentEditor(tk.Toplevel):
         ttk.Label(mcf, text="Check circuit won’t list its unused pins; it checks that power and ground are wired instead.",
                   style="Hint.TLabel", wraplength=int(400 * self.app.ui_scale), justify="left").grid(
             row=1, column=0, sticky="w")
+        lgf = ttk.Frame(mid, style="Inner.TFrame")
+        lgf.grid(row=8, column=0, sticky="ew", pady=(12, 0))
+        lgf.columnconfigure(0, weight=1)
+        ttk.Label(lgf, text="Logic (for the simulator)", style="Card.TLabel").grid(row=0, column=0, sticky="w")
+        self.b_logic = ttk.Button(lgf, text="Add logic…", command=self._edit_logic)
+        self.b_logic.grid(row=0, column=1, rowspan=2, sticky="ne", padx=(8, 0))
+        Tooltip(self.b_logic, "Describe what the chip does with equations like  Y = A & B  or  Q = D on CLK")
+        self.logic_lbl = ttk.Label(lgf, text="", style="Hint.TLabel", wraplength=int(320 * self.app.ui_scale),
+                                   justify="left")
+        self.logic_lbl.grid(row=1, column=0, sticky="w")
 
         # right: preview
         right = ttk.Frame(outer, style="Card.TFrame", padding=14)
@@ -2157,7 +2798,7 @@ class ComponentEditor(tk.Toplevel):
         self.pv.bind("<Configure>", lambda e: self._changed())
         self.pv_info = ttk.Label(right, text="", style="Hint.TLabel", wraplength=int(260 * s))
         self.pv_info.pack(anchor="w")
-        if self.sim_model:
+        if self.sim_model and not self.logic.strip():
             ttk.Label(right, text="Simulates like the built-in part it was copied from, as long as its "
                                   "pin names stay the same.", style="Hint.TLabel",
                       wraplength=int(260 * s), justify="left").pack(anchor="w", pady=(6, 0))
@@ -2333,6 +2974,7 @@ class ComponentEditor(tk.Toplevel):
         fit_preview(self.pv, rd, self.fam, label=(d["prefix"] + "1"), value=d["value"])
         npins = len(d["pins"])
         self.pv_info.configure(text="%d pin%s · %d × %d grid squares" % (npins, "" if npins == 1 else "s", d["w"], d["h"]))
+        self._logic_status()
 
     def _save(self):
         d = self.build_def()
@@ -2347,8 +2989,231 @@ class ComponentEditor(tk.Toplevel):
         if any(not p["name"] for p in d["pins"]):
             messagebox.showwarning(APP_NAME, "Every pin needs a name.", parent=self)
             return
+        if self.logic.strip():
+            prog = logic_program(self.logic, self._pin_names())
+            if isinstance(prog, LogicError) and not messagebox.askyesno(
+                    APP_NAME, "The part’s logic has a problem:\n\n%s\n\nSave anyway? It won’t simulate until the "
+                              "logic is fixed (Edit logic…)." % prog, parent=self):
+                return
         d["id"] = self.edit_id or ("custom_" + uuid.uuid4().hex[:10])
         self.app.save_definition(d, use_for=self.use_for)
+        self.destroy()
+
+
+class LogicDialog(tk.Toplevel):
+    """Write the logic equations of a part; shows problems and a truth table as you type."""
+
+    def __init__(self, editor):
+        super().__init__(editor)
+        self.ed = editor
+        self.app = editor.app
+        s = self.app.ui_scale
+        fam = self.app.fam
+        self.title("Chip logic — " + APP_NAME)
+        self.configure(bg=C["bg"])
+        self.transient(editor)
+        self.geometry("%dx%d" % (int(1060 * s), int(680 * s)))
+        self.minsize(int(820 * s), int(520 * s))
+        self._job = None
+        mono = ("Consolas", 11) if os.name == "nt" else ("DejaVu Sans Mono", 10)
+
+        bar = ttk.Frame(self, style="Bg.TFrame", padding=(12, 0, 12, 12))
+        bar.pack(side="bottom", fill="x")
+        ttk.Button(bar, text="OK", style="Accent.TButton", command=self._ok).pack(side="right")
+        ttk.Button(bar, text="Cancel", command=self.destroy).pack(side="right", padx=(0, 8))
+        ttk.Button(bar, text="Remove logic", style="Danger.TButton", command=self._clear).pack(side="left")
+
+        outer = ttk.Frame(self, style="Bg.TFrame", padding=12)
+        outer.pack(fill="both", expand=True)
+        outer.columnconfigure(0, weight=11, uniform="logic")
+        outer.columnconfigure(1, weight=9, uniform="logic")
+        outer.rowconfigure(0, weight=1)
+
+        left = ttk.Frame(outer, style="Card.TFrame", padding=14)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        left.columnconfigure(0, weight=1)
+        left.rowconfigure(4, weight=1)
+        left.grid_propagate(False)
+        top = ttk.Frame(left, style="Inner.TFrame")
+        top.grid(row=0, column=0, sticky="ew")
+        top.columnconfigure(0, weight=1)
+        ttk.Label(top, text="Logic equations", style="CardTitle.TLabel").grid(row=0, column=0, sticky="w")
+        mb = ttk.Menubutton(top, text="Start from an example ▾")
+        menu = tk.Menu(mb, tearoff=0)
+        for title, pins, text in LOGIC_TEMPLATES:
+            menu.add_command(label=title, command=lambda p=pins, t=text, n=title: self._template(n, p, t))
+        mb["menu"] = menu
+        mb.grid(row=0, column=1, sticky="e")
+        ttk.Label(left, text="Describe what the chip does, one line per output. Inputs are the pins you read, "
+                             "outputs are the pins you set. The truth table on the right updates as you type.",
+                  style="Hint.TLabel", wraplength=int(470 * s), justify="left").grid(row=1, column=0, sticky="w", pady=(4, 6))
+        pf = ttk.Frame(left, style="Inner.TFrame")
+        pf.grid(row=2, column=0, sticky="ew", pady=(0, 6))
+        ttk.Label(pf, text="Pins (click to insert):", style="Card.TLabel").pack(side="left", anchor="n")
+        self.pin_txt = tk.Text(pf, height=2, wrap="word", relief="flat", font=(fam, 9), cursor="arrow",
+                               borderwidth=0, highlightthickness=0, bg=C["panel"], fg=C["text"], padx=6)
+        self.pin_txt.pack(side="left", fill="x", expand=True)
+        self._fill_pins()
+        tf = ttk.Frame(left, style="Inner.TFrame")
+        tf.grid(row=4, column=0, sticky="nsew")
+        tf.columnconfigure(0, weight=1)
+        tf.rowconfigure(0, weight=1)
+        self.txt = tk.Text(tf, wrap="none", font=mono, undo=True, relief="flat", highlightthickness=1,
+                           padx=8, pady=6, **text_colors())
+        self.txt.grid(row=0, column=0, sticky="nsew")
+        sb = ttk.Scrollbar(tf, orient="vertical", command=self.txt.yview)
+        sb.grid(row=0, column=1, sticky="ns")
+        self.txt.configure(yscrollcommand=sb.set)
+        self.txt.insert("1.0", editor.logic or "# Example:  Y = A & B\n")
+        self.txt.edit_reset()
+        self.txt.bind("<KeyRelease>", lambda e: self._schedule())
+        self.txt.bind("<<Paste>>", lambda e: self._schedule())
+        self.status = tk.Label(left, text="", bg=C["panel"], anchor="w", justify="left", font=self.app.f_bold,
+                               wraplength=int(470 * s))
+        self.status.grid(row=5, column=0, sticky="ew", pady=(8, 0))
+        self.roles = ttk.Label(left, text="", style="Hint.TLabel", wraplength=int(470 * s), justify="left")
+        self.roles.grid(row=6, column=0, sticky="w", pady=(2, 0))
+
+        right = ttk.Frame(outer, style="Card.TFrame", padding=14)
+        right.grid(row=0, column=1, sticky="nsew")
+        right.columnconfigure(0, weight=1)
+        right.rowconfigure(1, weight=1)
+        right.grid_propagate(False)
+        ttk.Label(right, text="Truth table", style="CardTitle.TLabel").grid(row=0, column=0, sticky="w")
+        tt = ttk.Frame(right, style="Inner.TFrame")
+        tt.grid(row=1, column=0, sticky="nsew", pady=(6, 0))
+        tt.columnconfigure(0, weight=1)
+        tt.rowconfigure(0, weight=1)
+        self.table = ttk.Treeview(tt, show="headings", selectmode="none", height=10)
+        self.table.grid(row=0, column=0, sticky="nsew")
+        tsb = ttk.Scrollbar(tt, orient="vertical", command=self.table.yview)
+        tsb.grid(row=0, column=1, sticky="ns")
+        txs = ttk.Scrollbar(tt, orient="horizontal", command=self.table.xview)
+        txs.grid(row=1, column=0, sticky="ew")
+        self.table.configure(yscrollcommand=tsb.set, xscrollcommand=txs.set)
+        self.table_note = ttk.Label(right, text="", style="Hint.TLabel", wraplength=int(360 * s), justify="left")
+        self.table_note.grid(row=2, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(right, text="How to write it", style="Card.TLabel").grid(row=3, column=0, sticky="w", pady=(12, 2))
+        tk.Label(right, text=LOGIC_HELP, bg=C["panel"], fg=C["muted"], font=(mono[0], max(8, mono[1] - 2)),
+                 justify="left", anchor="w").grid(row=4, column=0, sticky="w")
+
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.bind("<Escape>", lambda e: self.destroy())
+        self._validate()
+        self.txt.focus_set()
+        self.grab_set()
+
+    # ---- helpers
+    def _pins(self):
+        return [r["name"] for r in self.ed.rows if r["kind"] == "pin" and r["name"]]
+
+    def _fill_pins(self):
+        t = self.pin_txt
+        t.configure(state="normal")
+        t.delete("1.0", "end")
+        pins = list(dict.fromkeys(self._pins()))
+        if not pins:
+            t.insert("end", "(none yet: add pins in the Component Editor, or start from an example)")
+        for i, nm in enumerate(pins):
+            tag = "p%d" % i
+            label = ('"%s"' % nm) if re.search(r"\s", nm) else nm
+            t.insert("end", " %s " % nm, (tag, "pin"))
+            t.insert("end", "  ")
+            t.tag_bind(tag, "<Button-1>", lambda e, s_=label: self._insert(s_))
+        t.tag_configure("pin", background=C["accent_light"], foreground=C["accent_dark"])
+        t.configure(state="disabled", height=2 if len(pins) < 14 else 3)
+
+    def _insert(self, text):
+        self.txt.insert("insert", text)
+        self.txt.focus_set()
+        self._schedule()
+
+    def _schedule(self):
+        if self._job:
+            self.after_cancel(self._job)
+        self._job = self.after(250, self._validate)
+
+    def _text(self):
+        return self.txt.get("1.0", "end").rstrip() + "\n"
+
+    def _validate(self):
+        self._job = None
+        txt = self.txt
+        txt.tag_remove("err", "1.0", "end")
+        txt.tag_configure("err", background=_mix(C["field"], C["danger"], 0.22))
+        prog = logic_program(self._text(), self._pins())
+        self.table.delete(*self.table.get_children())
+        if isinstance(prog, LogicError):
+            self.status.configure(text="⚠  " + str(prog), fg=C["danger"], bg=C["panel"])
+            self.roles.configure(text="")
+            if prog.line:
+                txt.tag_add("err", "%d.0" % prog.line, "%d.end" % prog.line)
+            self.table["columns"] = ()
+            self.table_note.configure(text="Fix the problem on the left to see the table.")
+            return
+        self.status.configure(text="✓  The logic is OK.", fg=C["ok"], bg=C["panel"])
+        self.roles.configure(text=prog.summary())
+        cols, rows = prog.truth_table()
+        if cols is None:
+            self.table["columns"] = ()
+            self.table_note.configure(text=rows)
+            return
+        ids = ["c%d" % i for i in range(len(cols))]
+        self.table["columns"] = ids
+        for cid, (name, kind) in zip(ids, cols):
+            head = ("→ " if kind == "out" else "") + name
+            self.table.heading(cid, text=head)
+            w = max(46, 9 * len(head) + 20)
+            self.table.column(cid, width=int(w * self.app.ui_scale), anchor="center", stretch=False)
+        for r in rows:
+            self.table.insert("", "end", values=r)
+        notes = ["Columns marked → are what the chip outputs for each combination of inputs."]
+        if prog.states:
+            notes.append("“now” is what a stored signal holds before the clock edge; “after” is its new value.")
+        clk_only = [c for c in prog.clocks if c in prog.inputs and c not in [n for n, _k in cols]]
+        if clk_only:
+            notes.append("The clock (%s) isn’t a column: it only matters at the moment it rises or falls."
+                         % ", ".join(clk_only))
+        self.table_note.configure(text=" ".join(notes))
+
+    def _template(self, title, pins, text):
+        have = set(self._pins())
+        missing = [p for p in pins if p not in have]
+        cur = self.txt.get("1.0", "end").strip()
+        if cur and not cur.startswith("# Example:"):
+            if not messagebox.askyesno(APP_NAME, "Replace the logic you have written with “%s”?" % title, parent=self):
+                return
+        if missing:
+            r = messagebox.askyesnocancel(APP_NAME, "This example uses the pins %s, which this part doesn’t have yet.\n\n"
+                                          "Add them now? (Inputs go on the left, outputs on the right, VCC on top "
+                                          "and GND at the bottom.)" % ", ".join(missing), parent=self)
+            if r is None:
+                return
+            if r:
+                self.ed.add_logic_pins(missing, text)
+                self._fill_pins()
+        self.txt.delete("1.0", "end")
+        self.txt.insert("1.0", text)
+        self._validate()
+
+    def _clear(self):
+        if self.txt.get("1.0", "end").strip() and not messagebox.askyesno(
+                APP_NAME, "Remove the logic? The part won’t simulate any more.", parent=self):
+            return
+        self.ed.set_logic("")
+        self.destroy()
+
+    def _ok(self):
+        text = self._text()
+        if not re.sub(r"(#|//).*", "", text).strip():
+            text = ""
+        else:
+            prog = logic_program(text, self._pins())
+            if isinstance(prog, LogicError) and not messagebox.askyesno(
+                    APP_NAME, "The logic still has a problem:\n\n%s\n\nKeep it anyway? The part won’t simulate until "
+                              "it’s fixed." % prog, parent=self):
+                return
+        self.ed.set_logic(text)
         self.destroy()
 
 
@@ -2645,6 +3510,7 @@ class App:
         ex.add_command(label="RC low-pass filter (simulate)", command=lambda: self.load_example("rc"))
         ex.add_command(label="Transistor switch (simulate)", command=lambda: self.load_example("transistor"))
         ex.add_command(label="555 LED blinker (simulate)", command=lambda: self.load_example("blinker"))
+        ex.add_command(label="2-bit counter with flip-flops (simulate)", command=lambda: self.load_example("counter"))
         fm.add_cascade(label="Open example", menu=ex)
         self.recent_menu = tk.Menu(fm, tearoff=0)
         fm.add_cascade(label="Recent files", menu=self.recent_menu)
@@ -4794,7 +5660,8 @@ class App:
         self.root.after(30, self.fit)
         tips = {"rc": "Press ▶ Simulate, then open the Oscilloscope or Simulate › Frequency response.",
                 "transistor": "Press ▶ Simulate, then hold the push button down to switch the LED on.",
-                "blinker": "Press ▶ Simulate to watch the LED blink about once a second."}
+                "blinker": "Press ▶ Simulate to watch the LED blink about once a second.",
+                "counter": "Press ▶ Simulate: the red and green LEDs count 0, 1, 2, 3 in binary, one step per second."}
         if name in tips:
             self.flash(tips[name], 8000)
 
@@ -4951,8 +5818,10 @@ class App:
                     names = ", ".join(dict.fromkeys(rd.pins[i]["name"] for i in pwr))
                     issues.append(("Info", cid, "%s: no power pin (%s) is wired. That’s fine if the board is "
                                                 "powered over USB." % (lbl, names)))
-            elif n_conn < len(keys):
-                free = [rd.pins[i]["name"] for i in range(len(keys)) if (cid, i) not in wired]
+            elif n_conn < len(keys) and [i for i in range(len(keys)) if (cid, i) not in wired
+                                         and rd.pins[i]["name"] not in rd.raw.get("optional_pins", ())]:
+                free = [rd.pins[i]["name"] for i in range(len(keys)) if (cid, i) not in wired
+                        and rd.pins[i]["name"] not in rd.raw.get("optional_pins", ())]
                 sev = "Warning" if len(keys) <= 3 and c["def"] not in ("potentiometer",) else "Info"
                 txt = ", ".join(free[:10]) + (" …" if len(free) > 10 else "")
                 msg = "%s: pin%s %s not connected." % (lbl, "s" if len(free) > 1 else "", txt)
@@ -6011,6 +6880,10 @@ class Gate(Dev):
         Dev.__init__(self, sim, comp, nodes)   # inputs..., output (last)
         self.kind = kind
 
+    def stamp_lin(self, S):
+        for node in self.n[:-1]:   # weak pull-down: an input left floating (e.g. by an open switch) reads 0
+            S.g(node, 0, LOGIC_PULLDOWN)
+
     @staticmethod
     def _s(v):
         u = max(-40.0, min(40.0, (v - 2.5) * 8.0))
@@ -6039,13 +6912,297 @@ class Gate(Dev):
         S.b[k] += rhs
 
     def currents(self, x):
-        return [0.0] * (len(self.n) - 1) + [x[self.br]]
+        return [self.V(x, i) * LOGIC_PULLDOWN for i in range(len(self.n) - 1)] + [x[self.br]]
 
     def info(self, x):
         names = ["A", "B"][:len(self.n) - 1]
         ins = ", ".join("%s = %d" % (nm, 1 if self.V(x, i) > 2.5 else 0) for i, nm in enumerate(names))
         vo = self.V(x, len(self.n) - 1)
         return [("Inputs", ins), ("Output Y", "%d  (%s)" % (1 if vo > 2.5 else 0, fmt_si(vo, "V")))]
+
+
+LOGIC_PULLDOWN = 1e-6   # 1 MΩ: floating logic inputs read LOW
+
+
+class FlipFlop(Dev):
+    """Edge-triggered D / T / JK flip-flops and the SR latch (5 V logic, outputs Q and Q').
+    The stored bit only changes between time steps, so feedback (Q' wired to D) and chains of
+    flip-flops (counters) behave like the real thing."""
+    nbr = 2
+    VDD = 5.0
+    ROUT = 50.0
+    INPUTS = {"dff": ("D", "CLK", "SET", "CLR"), "tff": ("T", "CLK", "SET", "CLR"),
+              "jkff": ("J", "K", "CLK", "SET", "CLR"), "srlatch": ("S", "R")}
+
+    def __init__(self, sim, comp, nodes, kind):
+        Dev.__init__(self, sim, comp, nodes)   # inputs (see INPUTS), then Q, Q'
+        self.kind = kind
+        self.names = self.INPUTS[kind]
+        self.nin = len(self.names)
+        self.Q = False
+        self.clk = None        # clock level at the previous check (None = not seen yet)
+        self.invalid = None    # None, or the value both outputs are forced to
+        self.edges = 0
+
+    def level(self, x, name):
+        return self.V(x, self.names.index(name)) > 2.5
+
+    def outs(self):
+        if self.invalid is not None:
+            return self.invalid, self.invalid
+        return self.Q, not self.Q
+
+    def stamp_lin(self, S):
+        for node in self.n[:self.nin]:
+            S.g(node, 0, LOGIC_PULLDOWN)
+        A = S.A
+        for j, node in enumerate(self.n[self.nin:]):
+            k = self.br + j
+            if node:
+                A[node - 1][k] += 1.0
+                A[k][node - 1] += 1.0
+            A[k][k] -= self.ROUT
+
+    def rhs(self, S):
+        q, qb = self.outs()
+        S.b[self.br] += self.VDD if q else 0.0
+        S.b[self.br + 1] += self.VDD if qb else 0.0
+
+    def discrete(self, x):
+        before = (self.Q, self.invalid)
+        lv = lambda name: self.level(x, name)
+        if self.kind == "srlatch":
+            s, r = lv("S"), lv("R")
+            self.invalid = False if (s and r) else None
+            if s and not r:
+                self.Q = True
+            elif r and not s:
+                self.Q = False
+        else:
+            clk = lv("CLK")
+            edge = self.clk is False and clk
+            self.clk = clk
+            st, cl = lv("SET"), lv("CLR")
+            self.invalid = True if (st and cl) else None
+            if st and not cl:
+                self.Q = True
+            elif cl and not st:
+                self.Q = False
+            elif edge and not st:
+                self.edges += 1
+                if self.kind == "dff":
+                    self.Q = lv("D")
+                elif self.kind == "tff":
+                    if lv("T"):
+                        self.Q = not self.Q
+                else:
+                    j, k = lv("J"), lv("K")
+                    if j and k:
+                        self.Q = not self.Q
+                    elif j:
+                        self.Q = True
+                    elif k:
+                        self.Q = False
+        return (self.Q, self.invalid) != before
+
+    def currents(self, x):
+        return ([self.V(x, i) * LOGIC_PULLDOWN for i in range(self.nin)]
+                + [x[self.br], x[self.br + 1]])
+
+    def info(self, x):
+        q, qb = self.outs()
+        lv = lambda nm: 1 if self.level(x, nm) else 0
+        main = [nm for nm in self.names if nm not in ("SET", "CLR")]
+        out = [("Q", "%d  (%s)" % (q, "HIGH" if q else "LOW")), (QBAR, "%d" % qb),
+               ("Inputs", "   ".join("%s %d" % (nm, lv(nm)) for nm in main))]
+        if "SET" in self.names:
+            out.append(("SET / CLR", "%d / %d" % (lv("SET"), lv("CLR"))))
+        if self.kind != "srlatch":
+            out.append(("Clock edges so far", "%d" % self.edges))
+        if self.invalid is not None:
+            out.append(("State", "Not allowed: %s both HIGH" % ("S and R" if self.kind == "srlatch" else "SET and CLR")))
+        return out
+
+    def view(self, x):
+        q = self.outs()[0]
+        return {"reading": "Q = %d" % q}
+
+    def warn(self, x):
+        if self.invalid is None:
+            return []
+        if self.kind == "srlatch":
+            return [("Warning", "%s: S and R are both HIGH, which an SR latch doesn’t allow (Q and Q' are both 0, "
+                                "and what it remembers afterwards depends on which input goes LOW first)." % self.label)]
+        return [("Warning", "%s: SET and CLR are both HIGH, which isn’t allowed (Q and Q' are both 1). "
+                            "Only use one of them at a time." % self.label)]
+
+    def export(self):
+        return {"Q": self.Q, "clk": self.clk, "edges": self.edges}
+
+    def restore(self, st):
+        self.Q = bool(st.get("Q"))
+        self.clk = st.get("clk")
+        self.edges = int(st.get("edges", 0))
+
+
+class LogicChip(Dev):
+    """A part whose behaviour comes from its logic equations (see LogicProgram).
+    With VCC / GND pins the outputs switch between those pins, so the chip only works when powered
+    and its supply current really flows through VCC.  Without them it runs as 5 V logic."""
+    ROUT = 50.0          # output resistance (about what a 74HC output has)
+    VINT = 5.0           # internal supply when the part has no power pins
+    TIE = 10.0           # extra VCC / GND pins are tied to the first one (0.1 Ω)
+
+    def __init__(self, sim, comp, nodes, prog, pin_names):
+        Dev.__init__(self, sim, comp, nodes)   # one node per pin, in pin order
+        self.prog = prog
+        self.pin_names = pin_names
+        first = {}
+        for i, nm in enumerate(pin_names):
+            first.setdefault(nm, i)
+        self.pin_of = first
+        self.in_pins = [first[n] for n in prog.inputs]
+        self.out_pins = [first[n] for n in prog.outputs]
+        pw = [i for i, nm in enumerate(pin_names) if is_power_pin(nm)]
+        gd = [i for i, nm in enumerate(pin_names) if is_ground_pin(nm)]
+        self.vcc_pins, self.gnd_pins = pw, gd
+        self.vg = nodes[gd[0]] if gd else 0
+        if pw:
+            self.vs = nodes[pw[0]]
+            self.nbr = 0
+        else:
+            self.vs = sim.new_node("%s (5 V supply)" % self.label)
+            self.nbr = 1
+        self.s = [0] * len(prog.names)
+        self.prev = {}
+        self.high = {}     # output pin index -> driven HIGH?
+        self.powered = None
+
+    # ---- helpers
+    def nv(self, x, node):
+        return x[node - 1] if node else 0.0
+
+    def supply(self, x):
+        return self.nv(x, self.vs) - self.nv(x, self.vg)
+
+    def stamp_lin(self, S):
+        vs, vg = self.vs, self.vg
+        if self.nbr:
+            S.branch(self.br, vs, vg)
+        S.g(vs, vg, 1e-6)                              # tiny quiescent current
+        for k in self.in_pins:
+            S.g(self.n[k], vg, LOGIC_PULLDOWN)
+        for k in self.out_pins:
+            S.g(self.n[k], vs if self.high.get(k) else vg, 1.0 / self.ROUT)
+        for group, main in ((self.vcc_pins, self.vs), (self.gnd_pins, self.vg)):
+            for k in group[1:]:
+                S.g(self.n[k], main, self.TIE)
+
+    def rhs(self, S):
+        if self.nbr:
+            S.b[self.br] += S.scale * self.VINT
+
+    def discrete(self, x):
+        sup = self.supply(x)
+        on = sup > 1.5
+        self.powered = on
+        vg = self.nv(x, self.vg)
+        s = self.s
+        idx = self.prog.idx
+        for name in self.prog.inputs:
+            v = self.nv(x, self.n[self.pin_of[name]]) - vg
+            s[idx[name]] = 1 if (on and v > 0.5 * sup) else 0
+        self.prog.step(s, self.prev)
+        changed = False
+        for name in self.prog.outputs:
+            k = self.pin_of[name]
+            h = bool(s[idx[name]])
+            if self.high.get(k) != h:
+                self.high[k] = h
+                changed = True
+        return changed
+
+    # ---- read-outs
+    def currents(self, x):
+        cur = [0.0] * len(self.n)
+        V = lambda k: self.nv(x, self.n[k])
+        vsv, vgv = self.nv(x, self.vs), self.nv(x, self.vg)
+        own_vs = self.vcc_pins[0] if self.vcc_pins else None
+        own_vg = self.gnd_pins[0] if self.gnd_pins else None
+
+        def flow(k_in, k_out, i):
+            if k_in is not None:
+                cur[k_in] += i
+            if k_out is not None:
+                cur[k_out] -= i
+        for k in self.in_pins:
+            flow(k, own_vg, (V(k) - vgv) * LOGIC_PULLDOWN)
+        for k in self.out_pins:
+            if self.high.get(k):
+                flow(own_vs, k, (vsv - V(k)) / self.ROUT)
+            else:
+                flow(k, own_vg, (V(k) - vgv) / self.ROUT)
+        flow(own_vs, own_vg, (vsv - vgv) * 1e-6)
+        for group, main, mv in ((self.vcc_pins, own_vs, vsv), (self.gnd_pins, own_vg, vgv)):
+            for k in group[1:]:
+                flow(k, main, (V(k) - mv) * self.TIE)
+        return cur
+
+    def _bits(self, names):
+        return "   ".join("%s %d" % (n, self.s[self.prog.idx[n]]) for n in names)
+
+    def info(self, x):
+        out = []
+        if self.vcc_pins:
+            sup = self.supply(x)
+            out.append(("Power", "%s  (%s)" % (fmt_si(sup, "V"), "on" if sup > 1.5 else "OFF: wire VCC and GND")))
+        for title, names in (("Inputs", self.prog.inputs), ("Outputs", self.prog.outputs),
+                             ("Internal", self.prog.internal)):
+            names = names[:16]
+            for k in range(0, len(names), 4):      # four per line so the panel doesn't cut them off
+                out.append((title if k == 0 else "", self._bits(names[k:k + 4])))
+        return out
+
+    def view(self, x):
+        on = self.supply(x) > 1.5
+        return {"pinstate": [(k, bool(self.s[self.prog.idx[self.pin_names[k]]]) if on else None)
+                             for k in self.in_pins + self.out_pins]}
+
+    def warn(self, x):
+        out = []
+        sup = self.supply(x)
+        used = any((self.cid, k) in self.sim.wired for k in self.out_pins)
+        if self.vcc_pins and used and sup < 1.5:
+            names = "/".join(dict.fromkeys(self.pin_names[k] for k in self.vcc_pins + self.gnd_pins))
+            out.append(("Warning", "%s has no power, so its outputs stay LOW. Wire %s: VCC to +5 V and GND to "
+                                   "ground. Real logic chips need power too." % (self.label, names)))
+        if sup > 6.5:
+            out.append(("Warning", "%s has %s between VCC and GND. Most logic chips are damaged above about "
+                                   "6 V (74HC: 2–6 V, 74LS: 4.75–5.25 V)." % (self.label, fmt_si(sup, "V"))))
+        if sup < -0.5:
+            out.append(("Warning", "%s is powered backwards (GND is at the higher voltage). That destroys a "
+                                   "real chip." % self.label))
+        cur = self.currents(x)
+        for k in self.out_pins:
+            i = abs(cur[k])
+            if i > 0.025:
+                out.append(("Warning", "%s: output %s is supplying %s. A logic output can only give about "
+                                       "20 mA; it may be shorted or driving a load without a resistor."
+                            % (self.label, self.pin_names[k], fmt_si(i, "A"))))
+                break
+        return out
+
+    def export(self):
+        return {"s": dict(zip(self.prog.names, self.s)), "prev": {self.prog.names[i]: v for i, v in self.prev.items()}}
+
+    def restore(self, st):
+        sv = st.get("s", {})
+        for n, v in sv.items():
+            if n in self.prog.idx and n in self.prog.states:
+                self.s[self.prog.idx[n]] = 1 if v else 0
+        for n, v in st.get("prev", {}).items():
+            if n in self.prog.idx:
+                self.prev[self.prog.idx[n]] = v
 
 
 class Timer555(Dev):
@@ -6409,6 +7566,41 @@ def _make_device(sim, c, rd, model):
         d = Gate(sim, c, nodes, model)
         d.pidx = idx
         return d
+    if model == "logic":
+        names = [p["name"] for p in rd.pins]
+        prog = logic_program(rd.raw.get("logic", ""), names)
+        if isinstance(prog, LogicError):
+            sim.note("Warning", c["id"], "%s isn’t simulated because its logic has a problem (%s). Fix it with "
+                                         "Edit component type… › Edit logic…" % (lab, prog))
+            return False
+        nodes = []
+        for i, nm in enumerate(names):
+            key = (c["id"], i)
+            if key not in sim.node_of:
+                sim.node_of[key] = sim.new_node("%s.%s" % (lab, nm))
+            nodes.append(sim.node_of[key])
+        d = LogicChip(sim, c, nodes, prog, names)
+        d.pidx = list(range(len(names)))
+        loose = [n for n in prog.inputs if not sim.is_wired(c, names.index(n))]
+        if loose and any(sim.is_wired(c, names.index(n)) for n in prog.outputs):
+            sim.note("Info", c["id"], "%s: input%s %s not connected, so %s as LOW. (On a real chip, connect "
+                                      "unused inputs to GND or VCC.)"
+                     % (lab, "s" if len(loose) > 1 else "", ", ".join(loose[:8]) + (" …" if len(loose) > 8 else ""),
+                        "they count" if len(loose) > 1 else "it counts"))
+        return d
+    if model in FlipFlop.INPUTS:
+        names = FlipFlop.INPUTS[model] + ("Q", QBAR)
+        nodes, idx = pins(*names)
+        loose = [nm for nm, i in zip(names, idx) if not sim.is_wired(c, i) and nm not in ("SET", "CLR", "Q", QBAR)]
+        if "CLK" in loose:
+            sim.note("Info", c["id"], "%s: CLK isn’t connected, so the flip-flop never changes "
+                                      "(except through SET / CLR)." % lab)
+            loose.remove("CLK")
+        if loose:
+            sim.note("Info", c["id"], "%s: input %s not connected, so it counts as 0 (LOW)." % (lab, " and ".join(loose)))
+        d = FlipFlop(sim, c, nodes, model)
+        d.pidx = idx
+        return d
     if model == "timer555":
         names = ("TRIG", "THRES", "DISCH", "CTRL", "OUT", "VCC", "RESET", "GND")
         nodes, idx = pins(*names)
@@ -6438,6 +7630,7 @@ SIM_MODELS = {"resistor", "ldr", "potentiometer", "fuse", "capacitor", "capacito
               "battery", "dc_source", "ac_source", "square_source", "current_source", "voltmeter",
               "ammeter", "switch", "pushbutton", "lamp", "motor", "buzzer", "diode", "zener", "led",
               "npn", "pnp", "nmos", "opamp", "and", "nand", "or", "nor", "xor", "not", "timer555",
+              "dff", "tff", "jkff", "srlatch",
               "reg7805", "tmp36", "relay", "probe", "vcc", "ground"}
 
 
@@ -6445,6 +7638,8 @@ def sim_model_of(library, c):
     d = library.get(c["def"])
     if not d:
         return None
+    if d.get("logic"):
+        return "logic"
     return d.get("sim") or d.get("id")
 
 
@@ -6544,10 +7739,18 @@ class Sim:
                     if i is not None and (cid, i) in net_of:
                         ref = net_of[(cid, i)]
                         break
-            gnd = ref if ref is not None else 0
-            self.ref_note = nets[gnd]["name"]
-            self.note("Info", None, "There is no Ground symbol, so voltages are measured from net %s. "
-                                    "Add a Ground (0 V) to choose the reference point yourself." % nets[gnd]["name"])
+            has_rail = any(sim_model_of(app.library, c) == "vcc" and (cid, 0) in net_of
+                           for cid, c in app.comps.items())
+            if ref is None and has_rail:
+                # only power rails: they are measured from an implied 0 V, like the logic parts' own ground
+                gnd = -1
+                self.note("Info", None, "There is no Ground symbol, so the power rails are measured from an "
+                                        "imaginary 0 V. Add a Ground wherever your circuit returns to 0 V.")
+            else:
+                gnd = ref if ref is not None else 0
+                self.ref_note = nets[gnd]["name"]
+                self.note("Info", None, "There is no Ground symbol, so voltages are measured from net %s. "
+                                        "Add a Ground (0 V) to choose the reference point yourself." % nets[gnd]["name"])
         net_node = {}
         for i, net in enumerate(nets):
             if i == gnd:
@@ -6594,6 +7797,8 @@ class Sim:
             except _MissingPin as e:
                 self.note("Warning", cid, "%s can’t be simulated: it has no pin named “%s”." % (lab, e.args[0]))
                 continue
+            if d is False:      # not simulated, already explained in a note
+                continue
             if d is None:
                 if any((cid, i) in self.wired for i in range(len(rd.pins))):
                     unsupported.append(lab)
@@ -6605,13 +7810,14 @@ class Sim:
             self.by_cid[cid] = d
         if unsupported:
             self.note("Info", None, "Not simulated (their pins are left unconnected): %s. Microcontroller boards, "
-                                    "digital modules and parts you made yourself have no simulation model."
+                                    "digital modules and parts you made yourself have no simulation model "
+                                    "(give your own parts logic equations to simulate them as chips)."
                       % ", ".join(unsupported))
         k = self.nn
         for d in self.devs:
             if d.nbr:
                 d.br = k
-                k += 1
+                k += d.nbr
         self.N = k
         self.x = [0.0] * k
         self.nl = [d for d in self.devs if d.nonlinear]
@@ -7037,6 +8243,30 @@ def build_example(name):
         wire(u, "OUT", r3, "1", orange)
         wire(r3, "2", d, "A", orange)
         wire(d, "K", g3, "GND", black)
+    elif name == "counter":
+        clk = add("square_source", 2, 8, "V1", "5 V 1 Hz")
+        g1 = add("ground", 2, 12, "GND1")
+        p1 = add("vcc", 7, 0, "PWR1", "+5 V")
+        f1 = add("tff", 10, 4, "FF1")
+        p2 = add("vcc", 7, 13, "PWR2", "+5 V")
+        f2 = add("tff", 10, 17, "FF2")
+        r1 = add("resistor", 18, 3, "R1", "330 Ω")
+        d1 = add("led", 22, 6, "D1", "Green", rot=1)
+        g2 = add("ground", 22, 10, "GND2")
+        r2 = add("resistor", 18, 16, "R2", "330 Ω")
+        d2 = add("led", 22, 19, "D2", "Red", rot=1)
+        g3 = add("ground", 22, 23, "GND3")
+        wire(clk, "+", f1, "CLK", orange)
+        wire(clk, "−", g1, "GND", black)
+        wire(p1, "V", f1, "T", red)
+        wire(p2, "V", f2, "T", red)
+        wire(f1, QBAR, f2, "CLK", purple, bends=[(15, 10), (5, 10)])
+        wire(f1, "Q", r1, "1", blue)
+        wire(r1, "2", d1, "A", blue)
+        wire(d1, "K", g2, "GND", black)
+        wire(f2, "Q", r2, "1", blue)
+        wire(r2, "2", d2, "A", blue)
+        wire(d2, "K", g3, "GND", black)
     else:  # blink
         u = add("arduino_uno", 6, 10, "U1", "")
         r = add("resistor", 15, 17, "R1", "220 Ω")
@@ -7275,19 +8505,26 @@ SIM_HELP = (
     "capacitors and electrolytic capacitors, inductors, batteries (with a small internal resistance), "
     "DC, AC and square-wave sources, current sources, power rails, voltmeters, ammeters, voltage probes, "
     "switches and push buttons, lamps, motors, buzzers, diodes, Zener diodes, LEDs (the value sets the "
-    "color), NPN and PNP transistors, N-MOSFETs, op-amps, logic gates (5 V logic), the 555 timer, the 7805 "
-    "regulator, the TMP36 temperature sensor (set the temperature) and the relay module.\n\n"
+    "color), NPN and PNP transistors, N-MOSFETs, op-amps, logic gates and flip-flops (5 V logic), the 555 timer, the 7805 "
+    "regulator, the TMP36 temperature sensor (set the temperature), the relay module, the 74HC logic chips and "
+    "any part you give logic equations.\n\n"
     "Not simulated\n"
     "Microcontroller boards (Arduino, Pico), digital modules (LCD, ultrasonic sensor, servo), generic ICs and "
-    "parts you make yourself. Their pins are left unconnected. A copy of a simulated part (for example one "
-    "you gave a picture) still simulates as long as its pin names stay the same.\n\n"
+    "parts you make yourself without logic. Their pins are left unconnected. A copy of a simulated part (for "
+    "example one you gave a picture) still simulates as long as its pin names stay the same.\n\n"
+    "Logic chips\n"
+    "The 74HC chips (74HC00, 02, 04, 08, 32, 86 and 74) simulate from logic equations, and so can any part you "
+    "make: in the Component Editor click Add logic… and write lines such as  Y = A & B,  Q = D on CLK  or  "
+    "Q = 0 when RST. While simulating, each logic pin shows a green dot when HIGH and a grey dot when LOW. A chip "
+    "with VCC and GND pins only works when they are wired to its power supply.\n\n"
     "Values\n"
     "Each part’s Value box is read: 4.7 kΩ, 100 nF, 10 µF, 1 mH, 9 V, 1 mA, 10 V 60 Hz (peak), "
     "120 V rms 60 Hz, 5 V 1 kHz (square wave), 6 V 1 W (lamp), 6 V 0.2 A (motor), 5.1 V (Zener), "
     "Red / Green / Blue (LED), hFE=200 (transistor gain).\n\n"
     "Models are simplified for learning\n"
     "Transistors use typical values (gain about 150), op-amps have a gain of 200 000 and outputs that stop "
-    "about 1.5 V short of their supply rails, logic gates switch at 2.5 V and output 0 V or 5 V. Real parts "
+    "about 1.5 V short of their supply rails, logic gates and flip-flops switch at 2.5 V and output 0 V or 5 V, an unconnected logic input "
+    "counts as LOW, and flip-flops change on the rising edge of CLK. Real parts "
     "vary, so expect small differences from a lab measurement.\n\n"
     "While it runs\n"
     "Hover over a part for its voltage, current and power; click it for full readings. Click switches, hold "
@@ -7582,6 +8819,16 @@ class _SimUI:
             if v.get("sound") and int(now * 4) % 2 == 0:
                 cv.create_text(X + s * 1.1, Y - s * 1.0, text="♪", fill=C["accent"],
                                font=(self.fam, -max(10, int(17 * z)), "bold"), tags="sim")
+            pst = v.get("pinstate")
+            if pst:
+                rr = max(3.4, 4.4 * z)
+                for k, level in pst:
+                    if level is None or k >= len(rd.pins):
+                        continue
+                    pp = rd.pins[k]
+                    PX, PY = self.T(*local_to_world(c, rd, pp["x"], pp["y"]))
+                    cv.create_oval(PX - rr, PY - rr, PX + rr, PY + rr, fill="#22c55e" if level else "#94a3b8",
+                                   outline=C["stroke"], width=max(1.0, 1.1 * z), tags="sim")
             rdg = v.get("reading")
             if rdg:
                 bx = self.comp_bbox(c)
@@ -7718,7 +8965,9 @@ class _SimUI:
         r += 1
         readings = []
         if d is None:
-            tk.Label(box, text="This part isn’t simulated, so its pins are left unconnected.",
+            tk.Label(box, text="This part isn’t simulated, so its pins are left unconnected."
+                     + ("  To make it work as a logic chip, give it logic equations: Edit component type… › "
+                        "Add logic…" if rd.custom else ""),
                      bg=C["sim_bg"], fg=C["muted"], wraplength=wl, justify="left").grid(row=0, column=0, sticky="w")
         else:
             try:

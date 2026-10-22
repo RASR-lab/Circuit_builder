@@ -54,27 +54,82 @@ On Windows 10/11 the title bars turn dark too; the menu bar strip itself follows
 **Ground and power rails:** every Ground symbol is connected together, and so is every Power Rail (VCC) with the same value (e.g. `+5 V`).
 You can put a ground symbol wherever it's convenient instead of running long wires.
 
+## Flip-flops and latches
+
+The **Flip-Flops & Latches** group in the parts list has four parts for digital logic labs (5 V logic, like the logic gates):
+
+| Part | Pins | What it does |
+|---|---|---|
+| **D Flip-Flop** | D, CLK, Q, Q', SET, CLR | On each rising edge of CLK (LOW → HIGH), Q copies D and holds it until the next edge |
+| **T Flip-Flop** | T, CLK, Q, Q', SET, CLR | On each rising edge, Q flips if T is HIGH and stays the same if T is LOW |
+| **JK Flip-Flop** | J, K, CLK, Q, Q', SET, CLR | On each rising edge: J = K = 0 holds, J = 1 sets, K = 1 resets, J = K = 1 toggles |
+| **SR Latch** | S, R, Q, Q' | No clock: S = 1 sets Q, R = 1 resets Q, both 0 remembers |
+
+- **Q'** ("Q-bar", drawn as Q with a bar over it) is always the opposite of Q.
+- The clock input is the one marked with a small triangle.
+- **SET** and **CLR** are optional: while one of them is HIGH it forces Q to 1 or 0, whatever the clock is doing. Leave them unconnected if you don't need them; Check circuit doesn't complain about unused SET, CLR or Q' pins.
+- When simulating, each flip-flop shows **Q = 0** or **Q = 1** under it. Click it for its inputs, outputs and how many clock edges it has seen.
+- An unconnected logic input counts as LOW, and so does an input driven by a switch that is open, so a push button from +5 V to CLK works as a clock button.
+- Not allowed: SET and CLR both HIGH (Q and Q' both go to 1), or S and R both HIGH on the latch (both go to 0). The simulator warns you.
+
+Try *File › Open example › 2-bit counter with flip-flops*: a 1 Hz clock drives two T flip-flops, and their LEDs count 0, 1, 2, 3 in binary.
+To build a toggle button yourself, wire a D flip-flop's Q' back to its D and clock it with a push button: every press flips Q.
+
+## Logic chips and your own chip logic
+
+**74HC chips.** The **Logic ICs (74HC)** group has real 14-pin chips drawn in their actual pin order (pin 1 top-left, GND = pin 7 bottom-left, VCC = pin 14 top-right), so the drawing matches the chip on a breadboard:
+74HC00 (quad NAND), 74HC02 (quad NOR), 74HC04 (hex inverter), 74HC08 (quad AND), 74HC32 (quad OR), 74HC86 (quad XOR) and 74HC74 (dual D flip-flop, with active-LOW PRE and CLR: connect them to VCC for normal use).
+Just like the real thing, a chip only works once **VCC is wired to +5 V and GND to ground**: the simulator warns you if you forget, and the current your LEDs draw really flows in through the VCC pin.
+
+**Give your own parts logic.** Any part you make can work as a digital chip in the simulator. In the Component Editor, under *Logic (for the simulator)*, click **Add logic…** and describe what the chip does, one line per output:
+
+```
+# half adder
+SUM   = A ^ B
+CARRY = A & B
+```
+
+| Write | Meaning |
+|---|---|
+| `Y = A & B` | Y follows its inputs straight away (combinational logic) |
+| `Q = D on CLK` | Q takes the value of D on each rising edge of CLK (`on fall CLK` for falling edges) |
+| `Q = 0 when RST` | while RST is 1, Q is forced to 0 (beats the clock: use it for resets and presets) |
+| `Q = D when EN` | a latch: Q follows D while EN is 1 and remembers when EN goes to 0 |
+| `A & B`, `A * B`, `A and B` | AND |
+| `A \| B`, `A + B`, `A or B` | OR |
+| `A ^ B`, `A xor B` | XOR |
+| `!A`, `~A`, `A'`, `not A` | NOT |
+
+- **Names** are the part's pin names, written exactly (capitals matter). A pin name with spaces or symbols can go in quotes, e.g. `"D0 RX"`. Any other name on the left of `=` is an internal signal, handy for counters and state machines.
+- **Inputs and outputs** are worked out for you: pins you set are outputs, pins you only read are inputs.
+- **Power:** if the part has pins called VCC and GND (or 5V, VDD, VSS …), the outputs swing between them and the chip needs power to work. A part without power pins runs as 5 V logic, like the logic gates.
+- The editor checks every line as you type, marks the line with a problem in red with a plain-English explanation, and shows the **truth table** (for clocked parts it shows each stored bit "now" and "after CLK↑").
+- **Start from an example ▾** gives ready-made logic: quad NAND, half and full adder, multiplexer, 2-to-4 decoder, majority vote, D latch, D flip-flop with reset, 4-bit counter, 4-bit shift register and a traffic-light sequencer. It can add the pins the example needs.
+- While simulating, every logic pin of the chip shows a **green dot when HIGH** and a **grey dot when LOW**, and clicking the chip lists its inputs and outputs.
+- To start from a built-in chip (for example to make a 74HC10 from the 74HC00), select it in the parts list, click **Edit…**, and change its pins and logic.
+- An unconnected logic input counts as LOW. On a real CMOS chip you should connect unused inputs to GND or VCC.
+
 ## Simulating a circuit
 
 Press **▶ Simulate** (or **F5**). A green bar appears under the toolbar and the circuit starts running:
 
 - **Voltages appear on the wires** (each net, measured from Ground). Turn them off under *Simulate › Show voltages on wires*.
 - **LEDs and lamps glow** in proportion to their current, motors spin, buzzers show a ♪, blown fuses get a red ✕.
-- **Voltmeters, ammeters and voltage probes** show a reading next to them.
+- **Voltmeters, ammeters and voltage probes** show a reading next to them, and flip-flops show their stored bit.
 - **Hover over any part** for its voltage, current and power. **Click a part** to see full live readings in the right-hand panel, including the voltage and current at every pin (a transistor also shows whether it is off, amplifying or saturated).
 - **Interact:** click a switch to flip it, hold the mouse down on a push button to press it. Potentiometers (wiper position), LDRs (light level) and the TMP36 sensor (temperature) get a slider in the right-hand panel.
-- **Keep editing:** add parts, rewire, change values or undo while it runs; the simulation updates straight away.
+- **Keep editing:** add parts, rewire, change values or undo while it runs; the simulation updates straight away (flip-flops keep what they have stored).
 - **Messages:** click an empty spot on the canvas (or the message at the right of the green bar) to see warnings, e.g. an LED with no series resistor ("a real LED would burn out"), a ¼-watt resistor that would overheat, a reversed electrolytic capacitor, a 7805 without enough input voltage, or a short circuit. Click a message to select that part.
 
-The green bar also has **Pause**, **Restart** (back to time zero: capacitors empty, fuses replaced) and a **Speed** setting.
+The green bar also has **Pause**, **Restart** (back to time zero: capacitors empty, fuses replaced, flip-flops cleared) and a **Speed** setting.
 *Auto* picks a speed that suits the circuit: a 1 kHz filter runs about 500× slower than real time so you can watch the waves, while a 555 blinker at 1 Hz runs in real time.
 
 **Oscilloscope.** Right-click a wire (*Plot this voltage*) or a part (*Plot voltage across* / *Plot current through*) to add it to the oscilloscope, or use the **Oscilloscope** button. Voltage probes and meters are added automatically. Choose how much time is shown, pause, clear, and **Export CSV** to analyse the data in Excel.
 
 **Frequency response (Bode plot).** *Simulate › Frequency response* (or the button in the green bar) feeds a small sine wave into the chosen source and plots gain (dB) and phase at the chosen measuring point from, say, 10 Hz to 1 MHz. It reports the −3 dB cutoff of low-pass, high-pass and band-pass circuits, and you can hover the plot to read exact values or export it as CSV.
 
-**What is simulated:** resistors, potentiometers, LDRs, fuses, capacitors (including electrolytic), inductors, batteries (with a small internal resistance), DC / AC / square-wave sources, current sources, power rails, voltmeters, ammeters, voltage probes, switches, push buttons, lamps, motors, buzzers, diodes, Zener diodes, LEDs, NPN / PNP transistors, N-MOSFETs, op-amps, logic gates (5 V logic), the 555 timer, the 7805 regulator, the TMP36 sensor and the relay module.
-Microcontroller boards (Arduino, Pico), digital modules (LCD, ultrasonic sensor, servo), generic ICs and parts you make yourself are **not** simulated (their pins are left unconnected). A copy of a simulated part, for example a 555 you gave a picture, still simulates as long as its pin names stay the same.
+**What is simulated:** resistors, potentiometers, LDRs, fuses, capacitors (including electrolytic), inductors, batteries (with a small internal resistance), DC / AC / square-wave sources, current sources, power rails, voltmeters, ammeters, voltage probes, switches, push buttons, lamps, motors, buzzers, diodes, Zener diodes, LEDs, NPN / PNP transistors, N-MOSFETs, op-amps, logic gates and flip-flops (5 V logic), the 74HC logic chips, the 555 timer, the 7805 regulator, the TMP36 sensor, the relay module, and any part you give logic equations.
+Microcontroller boards (Arduino, Pico), digital modules (LCD, ultrasonic sensor, servo), generic ICs and parts you make yourself without logic are **not** simulated (their pins are left unconnected). A copy of a simulated part, for example a 555 you gave a picture, still simulates as long as its pin names stay the same.
 
 **Values the simulator reads** from each part's *Value* box:
 
@@ -94,10 +149,10 @@ Microcontroller boards (Arduino, Pico), digital modules (LCD, ultrasonic sensor,
 | N-MOSFET | `2N7000` (default), `IRF540`, `IRLZ44` |
 | Op-amp | `LM741` (default), `LM358` (output reaches V−), `rail-to-rail` |
 
-The models are simplified for learning (like SPICE, but with typical values): an op-amp has a gain of 200 000 and its output stops about 1.5 V short of its supply rails (±15 V is assumed if V+/V− aren't wired); logic gates switch at 2.5 V and output 0 V or 5 V; the relay module switches COM to NO when IN is HIGH.
+The models are simplified for learning (like SPICE, but with typical values): an op-amp has a gain of 200 000 and its output stops about 1.5 V short of its supply rails (±15 V is assumed if V+/V− aren't wired); logic gates and flip-flops switch at 2.5 V and output 0 V or 5 V, and flip-flops change on the rising edge of CLK; the relay module switches COM to NO when IN is HIGH.
 Expect small differences from a lab measurement, just as with any simulator.
 
-*File › Open example* has three circuits made for simulating: an **RC low-pass filter** (try the oscilloscope and the Bode plot), a **transistor switch** (hold the push button) and a **555 LED blinker**.
+*File › Open example* has four circuits made for simulating: an **RC low-pass filter** (try the oscilloscope and the Bode plot), a **transistor switch** (hold the push button), a **555 LED blinker** and a **2-bit counter with flip-flops**.
 
 ## Making your own components
 
@@ -129,7 +184,7 @@ The picture sits in the middle of the part with the label underneath, and the pi
 PNG, JPG, GIF and BMP pictures all work on Windows. Large photos are shrunk to 400 pixels when you add them, so files stay small.
 With **Size → Automatic** ticked, the part grows to make room for the picture; untick it to set the size yourself.
 Click the picture in the right-hand panel to see it bigger.
-Schematic symbols (resistor, LED, logic gates …) keep their standard drawing. To make a picture version, select one in the list, click **Edit…** to make your own copy, and add the picture there.
+Schematic symbols (resistor, LED, logic gates, flip-flops …) keep their standard drawing. To make a picture version, select one in the list, click **Edit…** to make your own copy, and add the picture there.
 
 Pictures are saved inside the part, so they travel with `.cblib` and `.circuit` files and appear in **Export image (SVG)**.
 
@@ -152,9 +207,9 @@ Circuit files also carry the custom parts they use, so opening someone's `.circu
 
 ## Built-in parts
 
-Resistor, capacitor, electrolytic capacitor, inductor, potentiometer, LDR, fuse, battery, DC/AC voltage source, square-wave source, current source, power rail, ground, voltmeter, ammeter, voltage probe, switch, push button, lamp, DC motor, buzzer, diode, Zener diode, LED, NPN/PNP transistors, N-MOSFET, op-amp, AND/NAND/OR/NOR/XOR/NOT gates, Arduino Uno, Raspberry Pi Pico, 555 timer, 7805 regulator, generic 8- and 14-pin ICs, servo, ultrasonic sensor, TMP36, I2C LCD and relay module.
+Resistor, capacitor, electrolytic capacitor, inductor, potentiometer, LDR, fuse, battery, DC/AC voltage source, square-wave source, current source, power rail, ground, voltmeter, ammeter, voltage probe, switch, push button, lamp, DC motor, buzzer, diode, Zener diode, LED, NPN/PNP transistors, N-MOSFET, op-amp, AND/NAND/OR/NOR/XOR/NOT gates, D/T/JK flip-flops, SR latch, 74HC00/02/04/08/32/86/74 logic chips, Arduino Uno, Raspberry Pi Pico, 555 timer, 7805 regulator, generic 8- and 14-pin ICs, servo, ultrasonic sensor, TMP36, I2C LCD and relay module.
 
-*File › Open example* has six ready-made circuits (the first three are also in the `examples` folder).
+*File › Open example* has seven ready-made circuits (the first three are also in the `examples` folder).
 
 ## Files and storage
 
@@ -173,7 +228,11 @@ BX("dht22", "DHT22 Sensor", "Modules & Sensors", "U", "", "Temperature & humidit
    5, 4, [("VCC", "left", 1), ("DATA", "left", 2), ("GND", "left", 3)], color="#fef3c7"),
 ```
 
-To make a new part simulate, add a branch for its id in `_make_device()` (search for it in `circuit_builder.py`) using one of the existing models, for example `Resistor`, `VSource` or `Diode`, and add the id to `SIM_MODELS`.
+A digital chip can simulate from logic equations: add `logic="..."` to its `BX(...)` line (see the 74HC parts, which use the `DIP14(...)` helper to lay out a 14-pin chip in its real pin order).
+
+An optional `optional_pins=[...]` list names pins that Check circuit shouldn't report when they're left unconnected (the flip-flops use it for SET, CLR and Q').
+
+To make a new part simulate, add a branch for its id in `_make_device()` (search for it in `circuit_builder.py`) using one of the existing models, for example `Resistor`, `VSource`, `Diode` or `FlipFlop`, and add the id to `SIM_MODELS`.
 The simulator itself (modified nodal analysis with Newton-Raphson, BDF2 time steps and an AC sweep) is in the *Simulation engine* section and uses only the Python standard library.
 
 Rebuild the `.exe` afterwards if you hand that out.
@@ -187,3 +246,6 @@ Rebuild the `.exe` afterwards if you hand that out.
 - **The simulation says "Short circuit"**: a battery, source or power rail has a plain wire (or an ammeter) straight across it. Click the message to find the part.
 - **A part shows "not simulated"**: it has no simulation model (see *What is simulated* above); its pins are left unconnected.
 - **"Running (slower than the chosen speed)"**: the circuit is too big to simulate at that speed on this PC. Pick a slower speed or *Auto*.
+- **A logic chip's outputs stay LOW**: wire its VCC pin to +5 V and its GND pin to ground. On a 74HC74, also connect PRE and CLR to VCC (they are active-LOW, so leaving them LOW holds the flip-flop in preset/clear).
+- **"Line 3: there is no pin or signal called …"** in the logic editor: the name doesn't match a pin exactly (capitals matter), or two names are written next to each other without an operator (write `A & B`, not `AB`).
+- **A flip-flop never changes**: check that CLK is wired and actually goes from LOW to HIGH. Q only changes on that rising edge, not while the clock stays HIGH.
