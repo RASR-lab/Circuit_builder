@@ -1,7 +1,7 @@
 # Circuit Builder
 
 A simple circuit and wiring editor for Windows, made for undergraduate labs.
-Drag parts onto a grid, click pin-to-pin to wire them, create your own parts with any pins you need, and **simulate the circuit** to see voltages, currents, glowing LEDs and waveforms.
+Drag parts onto a grid, click pin-to-pin to wire them, **turn any circuit you build into your own reusable part**, and **simulate the circuit** to see voltages, currents, glowing LEDs and waveforms.
 
 ![Circuit Builder](screenshot.png)
 
@@ -41,6 +41,8 @@ Click **More info → Run anyway**.
 | Undo / redo | **Ctrl+Z** / **Ctrl+Y** |
 | Zoom / move around | Mouse wheel zooms; right- or middle-drag pans; **0** fits the circuit |
 | Select several things | Drag a box around them, or Ctrl+click |
+| Make your own part from a circuit | Select it, then **Ctrl+G** (or **+ New Component › From the selected circuit**) |
+| See or change the circuit inside your part | Right-click it › **Show the circuit inside** (**Ctrl+Shift+G**) |
 | Simulate | **▶ Simulate** (top right) or **F5**; press again to stop |
 | Light / dark mode | Click **☾** (next to Simulate; it turns into **☀** to switch back) or tick *View › Dark mode* |
 | Bigger or smaller text on the diagram | *View › Diagram text size* › **Small**, **Normal** or **Large** (remembered next time) |
@@ -82,7 +84,7 @@ To build a toggle button yourself, wire a D flip-flop's Q' back to its D and clo
 74HC00 (quad NAND), 74HC02 (quad NOR), 74HC04 (hex inverter), 74HC08 (quad AND), 74HC32 (quad OR), 74HC86 (quad XOR) and 74HC74 (dual D flip-flop, with active-LOW PRE and CLR: connect them to VCC for normal use).
 Just like the real thing, a chip only works once **VCC is wired to +5 V and GND to ground**: the simulator warns you if you forget, and the current your LEDs draw really flows in through the VCC pin.
 
-**Give your own parts logic.** Any part you make can work as a digital chip in the simulator. In the Component Editor, under *Logic (for the simulator)*, click **Add logic…** and describe what the chip does, one line per output:
+**Give your own parts logic equations (advanced).** Building a part from a circuit (above) is the easiest way to make it work. For a digital chip you can instead describe it with equations: in the Component Editor, under *How it works in the simulator*, click **Add logic…** (or **Use equations instead…** on a part built from a circuit) and write one line per output:
 
 ```
 # half adder
@@ -129,8 +131,8 @@ The green bar also has **Pause**, **Restart** (back to time zero: capacitors emp
 
 **Frequency response (Bode plot).** *Simulate › Frequency response* (or the button in the green bar) feeds a small sine wave into the chosen source and plots gain (dB) and phase at the chosen measuring point from, say, 10 Hz to 1 MHz. It reports the −3 dB cutoff of low-pass, high-pass and band-pass circuits, and you can hover the plot to read exact values or export it as CSV.
 
-**What is simulated:** resistors, potentiometers, LDRs, fuses, capacitors (including electrolytic), inductors, batteries (with a small internal resistance), DC / AC / square-wave sources, current sources, power rails, voltmeters, ammeters, voltage probes, switches, push buttons, lamps, motors, buzzers, diodes, Zener diodes, LEDs, NPN / PNP transistors, N-MOSFETs, op-amps, logic gates and flip-flops (5 V logic), the 74HC logic chips, the 555 timer, the 7805 regulator, the TMP36 sensor, the relay module, and any part you give logic equations.
-Microcontroller boards (Arduino, Pico), digital modules (LCD, ultrasonic sensor, servo), generic ICs and parts you make yourself without logic are **not** simulated (their pins are left unconnected). A copy of a simulated part, for example a 555 you gave a picture, still simulates as long as its pin names stay the same.
+**What is simulated:** every part you made from a circuit (it simulates the circuit inside it), resistors, potentiometers, LDRs, fuses, capacitors (including electrolytic), inductors, batteries (with a small internal resistance), DC / AC / square-wave sources, current sources, power rails, voltmeters, ammeters, voltage probes, switches, push buttons, lamps, motors, buzzers, diodes, Zener diodes, LEDs, NPN / PNP transistors, N-MOSFETs, op-amps, logic gates and flip-flops (5 V logic), the 74HC logic chips, the 555 timer, the 7805 regulator, the TMP36 sensor, the relay module, and any part you give logic equations.
+Microcontroller boards (Arduino, Pico), digital modules (LCD, ultrasonic sensor, servo), generic ICs and parts you draw with *pins only* (no circuit or logic inside) are **not** simulated (their pins are left unconnected). A copy of a simulated part, for example a 555 you gave a picture, still simulates as long as its pin names stay the same.
 
 **Values the simulator reads** from each part's *Value* box:
 
@@ -157,7 +159,33 @@ Expect small differences from a lab measurement, just as with any simulator.
 
 ## Making your own components
 
-Click **+ New Component** (top right), then:
+### Build it from a circuit (recommended)
+
+Any circuit you build can become one reusable part that works in the simulator exactly like the circuit inside it, the way you'd turn gates into a half adder, a half adder into a full adder, or a resistor and capacitor into a filter block.
+
+1. **Build and test the circuit** on the canvas as usual.
+2. **Mark its pins.** From *Building Blocks*, drag in a **Component Pin** for each connection the new part needs, wire it to the circuit, and set its label to the pin name (`A`, `B`, `SUM`, `VCC` …).
+   Press **F** to flip a Component Pin so its wire end faces the circuit.
+3. **Select the circuit** together with its Component Pins (drag a box around it, or **Ctrl+A**).
+4. Press **Ctrl+G**, or click **+ New Component › From the selected circuit**, or **Make component…** in the right-hand panel.
+5. The Component Editor opens with the pins already filled in, each on the side of the circuit where its Component Pin sits, and a column showing what each pin connects to inside.
+   Give the part a name and label prefix (`HA` → HA1, HA2 …), reorder pins or pick a color or picture if you like, and click **Create component**.
+
+With *Replace the selected parts with the new component* ticked (the default), the selected circuit is swapped for one copy of the new part, and wires that left the selection are moved onto the matching pins.
+The part is saved in your library under *My Components* (★).
+
+- **No Component Pins?** That's fine too: every wire leaving the selection, and every unconnected pin of the selected parts, becomes a pin (named after the inner pin, e.g. `A`, `R1_2`). Rename or remove them in the editor.
+- **Grounds and power rails inside** a component join the circuit's Ground and the rails with the same value, just like everywhere else, so a part doesn't need GND or VCC pins to work.
+- **Components inside components:** a part you made can go inside another one (a full adder from two half adders, a 4-bit adder from four full adders …), up to 8 levels deep.
+- **Simulating:** a copy of your part shows its pin voltages and the current into each pin when you hover over or click it. Logic pins show green (HIGH) or grey (LOW) dots, and an LED or lamp inside makes the whole part glow. Warnings about parts inside it name them like `HA1/U2`; click one to select the part.
+- **Changing it later:** right-click a copy › **Show the circuit inside** (or *Show the circuit inside* in the right-hand panel). The circuit comes back onto the canvas, wired up, in a free spot. Edit it, keep it selected, and press **Ctrl+G** again: the editor offers **Update “Half Adder”** (every copy in your circuit updates, wires stay on pins with the same name) or **Save as a new component**.
+- **Sharing:** `.circuit` and `.cblib` files carry the parts used inside your components too, so a classmate opening your full adder also gets your half adder.
+
+Try *File › Open example › Half adder: make your own component*: press **Ctrl+A**, then **Ctrl+G**.
+
+### Draw a part with pins only
+
+For boards and modules that aren't simulated (sensors, displays, your own PCB), click **+ New Component › Draw a part with pins only**, then:
 
 1. **Details**: name, category, label prefix (`U` → U1, U2 …), optional default value, body color and picture.
 2. **Pins**: type a pin name, pick the side it sticks out of (left, right, top or bottom) and press Enter.
@@ -168,6 +196,7 @@ Click **+ New Component** (top right), then:
 3. **Preview** updates as you go. Click **Save to library**.
 
 Your parts appear under their category (marked ★) and are remembered for next time.
+A drawn part isn't simulated. To make one work, build its circuit and use *From the selected circuit* above, or, for a digital chip, describe it with logic equations (next section).
 To start from an existing part (e.g. turn the Arduino Uno into a Mega), select it and click **Edit…**; built-in parts open as a copy.
 If you change a part that's already in your circuit, the wires stay attached to pins with the same name.
 
@@ -208,13 +237,15 @@ Circuit files also carry the custom parts they use, so opening someone's `.circu
 
 ## Built-in parts
 
-Resistor, capacitor, electrolytic capacitor, inductor, potentiometer, LDR, fuse, battery, DC/AC voltage source, square-wave source, current source, power rail, ground, voltmeter, ammeter, voltage probe, switch, push button, lamp, DC motor, buzzer, diode, Zener diode, LED, NPN/PNP transistors, N-MOSFET, op-amp, AND/NAND/OR/NOR/XOR/NOT gates, D/T/JK flip-flops, SR latch, 74HC00/02/04/08/32/86/74 logic chips, Arduino Uno, Raspberry Pi Pico, 555 timer, 7805 regulator, generic 8- and 14-pin ICs, servo, ultrasonic sensor, TMP36, I2C LCD and relay module.
+Component Pin (for making your own parts), resistor, capacitor, electrolytic capacitor, inductor, potentiometer, LDR, fuse, battery, DC/AC voltage source, square-wave source, current source, power rail, ground, voltmeter, ammeter, voltage probe, switch, push button, lamp, DC motor, buzzer, diode, Zener diode, LED, NPN/PNP transistors, N-MOSFET, op-amp, AND/NAND/OR/NOR/XOR/NOT gates, D/T/JK flip-flops, SR latch, 74HC00/02/04/08/32/86/74 logic chips, Arduino Uno, Raspberry Pi Pico, 555 timer, 7805 regulator, generic 8- and 14-pin ICs, servo, ultrasonic sensor, TMP36, I2C LCD and relay module.
 
-*File › Open example* has seven ready-made circuits (the first three are also in the `examples` folder).
+*File › Open example* has eight ready-made circuits (the first three are also in the `examples` folder).
+The last one, *Half adder: make your own component*, is set up for practicing *Ctrl+G*.
 
 ## Files and storage
 
 - Circuits are saved as `.circuit` files (plain JSON, easy to grade or diff). Switch positions and slider settings are saved with the circuit.
+- A component built from a circuit keeps that circuit in its definition (`"subcircuit": {"comps": [...], "wires": [...]}`), and each of its pins records the inner pin it stands for (`"inner": [part id, pin number]`). So you can see exactly what a student's part contains by opening the file.
 - Your component library and settings (including light or dark mode and diagram text size) live in `%APPDATA%\CircuitBuilder\`.
   Copy `my_components.cblib` from there to back them up.
 - To open a `.circuit` file by double-clicking, right-click it → *Open with* → choose `CircuitBuilder.exe`.
@@ -246,7 +277,9 @@ Rebuild the `.exe` afterwards if you hand that out.
 - **Labels are hard to read**: pick *View › Diagram text size › Large*. It makes part names, values, pin names and simulation readings bigger without zooming.
 - **I lost a custom part**: check `%APPDATA%\CircuitBuilder\my_components.cblib`, or re-import a `.cblib` / open a `.circuit` that used it.
 - **The simulation says "Short circuit"**: a battery, source or power rail has a plain wire (or an ammeter) straight across it. Click the message to find the part.
-- **A part shows "not simulated"**: it has no simulation model (see *What is simulated* above); its pins are left unconnected.
+- **A part shows "not simulated"**: it has no simulation model (see *What is simulated* above); its pins are left unconnected. For your own parts, build them from a circuit instead.
+- **Make component says nothing can become a pin**: the selection has no wires leaving it and no free pins. Add Component Pins (Building Blocks), wire and name them, and select them together with the circuit.
+- **A wire disappeared after Make component**: it left the selection at a point with no Component Pin on it. Undo (**Ctrl+Z**), add a Component Pin there, and try again.
 - **"Running (slower than the chosen speed)"**: the circuit is too big to simulate at that speed on this PC. Pick a slower speed or *Auto*.
 - **A logic chip's outputs stay LOW**: wire its VCC pin to +5 V and its GND pin to ground. On a 74HC74, also connect PRE and CLR to VCC (they are active-LOW, so leaving them LOW holds the flip-flop in preset/clear).
 - **"Line 3: there is no pin or signal called …"** in the logic editor: the name doesn't match a pin exactly (capitals matter), or two names are written next to each other without an operator (write `A & B`, not `AB`).

@@ -52,7 +52,7 @@ except Exception:  # Pillow not installed: pictures still work (PNG/GIF, plus JP
     _PILOps = None
 
 APP_NAME = "Circuit Builder"
-APP_VERSION = "1.5"
+APP_VERSION = "1.6"
 FILE_EXT = ".circuit"
 LIB_EXT = ".cblib"
 G = 24  # pixels per grid unit at 100 % zoom
@@ -393,6 +393,12 @@ def sym_probe():
     return [L((1, 2), (1, 1.25)), CI(1, 0.8, 0.45, "white"), TX(1, 0.8, "V", 9, True)]
 
 
+def sym_port():
+    """Component Pin: a tag marking where a wire leaves a circuit that becomes a component."""
+    return [L((0, 1), (0.7, 1)),
+            PG((0.7, 0.55), (3.25, 0.55), (3.7, 1), (3.25, 1.45), (0.7, 1.45), fill="white")]
+
+
 def sym_diode():
     return [L((0, 1), (1.5, 1)), PG((1.5, 0.5), (1.5, 1.5), (2.4, 1), fill="stroke"),
             L((2.4, 0.5), (2.4, 1.5), w=1.3), L((2.4, 1), (4, 1))]
@@ -543,7 +549,7 @@ SYMBOLS = {
     "motor": sym_motor, "buzzer": sym_buzzer, "voltmeter": sym_voltmeter, "ammeter": sym_ammeter,
     "battery": sym_battery, "dc_source": sym_dc_source, "ac_source": sym_ac_source,
     "square_source": sym_square_source, "probe": sym_probe,
-    "current_source": sym_current_source, "ground": sym_ground, "vcc": sym_vcc,
+    "current_source": sym_current_source, "ground": sym_ground, "vcc": sym_vcc, "port": sym_port,
     "diode": sym_diode, "zener": sym_zener, "led": sym_led, "npn": sym_npn, "pnp": sym_pnp,
     "nmos": sym_nmos, "opamp": sym_opamp, "and": sym_and, "nand": sym_nand, "or": sym_or,
     "nor": sym_nor, "xor": sym_xor, "not": sym_not,
@@ -556,7 +562,13 @@ ALT_SYMBOLS = {"switch": sym_switch_closed, "pushbutton": sym_pushbutton_pressed
 # Built-in component library
 # --------------------------------------------------------------------------
 CATEGORY_ORDER = ["Passive", "Sources & Meters", "Switches & Outputs", "Semiconductors",
-                  "Logic Gates", "Flip-Flops & Latches", "Logic ICs (74HC)", "ICs & Boards", "Modules & Sensors"]
+                  "Logic Gates", "Flip-Flops & Latches", "Logic ICs (74HC)", "ICs & Boards", "Modules & Sensors",
+                  "Building Blocks"]
+
+# Id of the built-in "Component Pin" part.  When a selection becomes a component, each
+# Component Pin in it becomes one pin of the new part, named after the Component Pin's label.
+PORT_DEF = "port"
+MAX_NESTING = 8   # components built from circuits may contain others, this many levels deep
 
 
 def two_term(a="1", b="2"):
@@ -794,6 +806,12 @@ BUILTIN_DEFS = [
        "Electrically controlled switch. When IN is HIGH, COM connects to NO; otherwise COM connects to NC.", 6, 4,
        [("VCC", "left", 1), ("GND", "left", 2), ("IN", "left", 3),
         ("NO", "right", 1), ("COM", "right", 2), ("NC", "right", 3)], color="#dbeafe"),
+    # Building blocks for making your own components from a circuit
+    SY(PORT_DEF, "Component Pin", "Building Blocks", "P", "",
+       "Marks a pin of a component you make from a circuit. Wire it to the circuit and set its label to the "
+       "pin name (A, B, OUT, VCC …). Then select the circuit together with its Component Pins and click "
+       "Make component: each Component Pin becomes a pin of the new part.",
+       pins=[P("PIN", 0, 1, "L")], pivot=(2, 1), label_mode="label", label_pt=[2, 1]),
 ]
 
 
@@ -1776,6 +1794,153 @@ class Library:
         except OSError as e:
             messagebox.showerror(APP_NAME, "Could not save your component library:\n%s" % e)
 
+    def parts_inside(self, did):
+        """Ids of every part type used inside a component built from a circuit (all levels)."""
+        out, todo = set(), [did]
+        while todo:
+            d = self.get(todo.pop())
+            for c in ((d or {}).get("subcircuit") or {}).get("comps", []):
+                if c.get("def") not in out:
+                    out.add(c.get("def"))
+                    todo.append(c.get("def"))
+        return out
+
+    def with_dependencies(self, ids):
+        """These custom definitions plus every custom part used inside them (for saving and sharing)."""
+        ids = set(ids)
+        for did in list(ids):
+            ids |= self.parts_inside(did)
+        return [self.custom[d] for d in ids if d in self.custom]
+
+    def used_inside(self, did):
+        """Names of custom components whose circuit contains this part type."""
+        return [d.get("name", "?") for d in self.custom.values()
+                if d["id"] != did and did in self.parts_inside(d["id"])]
+
+
+# --------------------------------------------------------------------------
+# Nets, and components built from circuits
+# --------------------------------------------------------------------------
+def compute_nets_of(comps, wires):
+    """Group connected pins into nets.  comps: {id: comp}; wires: iterable of wire dicts.
+    Every Ground is one net, and so is every Power Rail with the same value."""
+    parent = {}
+
+    def find(k):
+        parent.setdefault(k, k)
+        while parent[k] != k:
+            parent[k] = parent[parent[k]]
+            k = parent[k]
+        return k
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    wires = list(wires)
+    wired = set()
+    for w in wires:
+        a, b = tuple(w["a"]), tuple(w["b"])
+        if a[0] in comps and b[0] in comps:
+            union(a, b)
+            wired.update((a, b))
+    rails = {}
+    for cid, c in comps.items():
+        if c["def"] == "ground" and (cid, 0) in wired:
+            rails.setdefault("GND", []).append((cid, 0))
+        elif c["def"] == "vcc" and (cid, 0) in wired:
+            rails.setdefault("PWR:" + (c.get("value") or "VCC").strip(), []).append((cid, 0))
+    for keys in rails.values():
+        for k in keys[1:]:
+            union(keys[0], k)
+    groups = {}
+    for k in list(parent):
+        groups.setdefault(find(k), []).append(k)
+    order = {cid: i for i, cid in enumerate(comps)}
+    nets = []
+    for g in groups.values():
+        g.sort(key=lambda k: (order.get(k[0], 0), k[1]))
+        nets.append(g)
+    nets.sort(key=lambda g: (order.get(g[0][0], 0), g[0][1]))
+    out, n, used = [], 1, set()
+    for g in nets:
+        defs = [comps[k[0]]["def"] for k in g]
+        name = None
+        if "ground" in defs:
+            name = "GND"
+        else:
+            for k in g:
+                c = comps[k[0]]
+                if c["def"] == "vcc":
+                    name = re.sub(r"\s+", "", c.get("value") or "VCC")
+                    break
+            else:
+                # a net with a Component Pin on it takes that pin's name
+                for k in g:
+                    c = comps[k[0]]
+                    if c["def"] == PORT_DEF and c.get("label", "").strip():
+                        name = re.sub(r"\s+", "_", c["label"].strip())
+                        break
+        if not name:
+            name = "N%d" % n
+            n += 1
+        base, i = name, 2
+        while name in used:
+            name = "%s_%d" % (base, i)
+            i += 1
+        used.add(name)
+        gs = set(g)
+        ws = [w["id"] for w in wires if "id" in w and tuple(w["a"]) in gs]
+        out.append({"name": name, "pins": g, "wires": ws})
+    return out
+
+
+def flatten_circuit(library, comps, wires):
+    """Expand every part built from a circuit into the parts inside it (for the simulator).
+
+    Inner parts get ids like  "<instance id>/<inner id>"  and labels like  "HA1/U2".  Each pin of the
+    instance is joined to the inner pin it stands for by an extra wire, so the instance's pins share a
+    net with the circuit inside.  Returns (comps {id: comp}, wires [..], blocks {instance id: def},
+    problems [(instance id, message)])."""
+    flat, fw, blocks, problems = {}, [], {}, []
+
+    def add(items, wire_items, pre, lpre, depth, stack):
+        for c in items:
+            cid = pre + c["id"]
+            if pre:
+                nc = dict(c)
+                nc["id"] = cid
+                nc["label"] = lpre + (c.get("label") or "?")
+            else:
+                nc = c   # the canvas's own part: switches and sliders change it while simulating
+            flat[cid] = nc
+            d = library.get(c.get("def"))
+            sub = (d or {}).get("subcircuit")
+            if not sub:
+                continue
+            if c["def"] in stack or depth >= MAX_NESTING:
+                problems.append((pre.split("/", 1)[0] if pre else cid,
+                                 "%s isn’t simulated: “%s” contains itself (or is nested more than %d levels "
+                                 "deep)." % (nc.get("label") or d.get("name", "?"), d.get("name", "?"), MAX_NESTING)))
+                continue
+            if not pre:
+                blocks[cid] = d
+            inner = sub.get("comps", [])
+            ipre = cid + "/"
+            add(inner, sub.get("wires", []), ipre, (nc.get("label") or d.get("name", "?")) + "/",
+                depth + 1, stack | {c["def"]})
+            ids = {ic["id"] for ic in inner}
+            for k, p in enumerate(d.get("pins", [])):
+                inn = p.get("inner")
+                if inn and inn[0] in ids:
+                    fw.append({"a": [cid, k], "b": [ipre + inn[0], int(inn[1])]})
+        for w in wire_items:
+            fw.append({"a": [pre + w["a"][0], w["a"][1]], "b": [pre + w["b"][0], w["b"][1]]})
+
+    add(list(comps.values()), list(wires.values()), "", "", 0, frozenset())
+    return flat, fw, blocks, problems
+
 
 # --------------------------------------------------------------------------
 # Small widgets
@@ -2464,14 +2629,16 @@ def logic_program(text, pins):
 class ComponentEditor(tk.Toplevel):
     SIDES = ["left", "right", "top", "bottom"]
 
-    def __init__(self, app, d=None, duplicate=False, image=None, use_for=None):
+    def __init__(self, app, d=None, duplicate=False, image=None, use_for=None, from_selection=None):
         """image: start with this picture.  use_for: id of a placed part that should switch
-        to the saved component (used when adding a picture to a built-in part)."""
+        to the saved component (used when adding a picture to a built-in part).
+        from_selection: made by App._selection_spec when the student turns selected parts into a component."""
         super().__init__(app.root)
         self.app = app
         self.fam = app.fam
         s = app.ui_scale
-        self.title("Component Editor — " + APP_NAME)
+        self.from_sel = from_selection
+        self.title(("Make a Component from Your Circuit — " if from_selection else "Component Editor — ") + APP_NAME)
         self.configure(bg=C["bg"])
         self.transient(app.root)
         self.geometry("%dx%d" % (int(1100 * s), int(700 * s)))
@@ -2482,8 +2649,11 @@ class ComponentEditor(tk.Toplevel):
         self.edit_id = d.get("id") if (d.get("custom") and not duplicate) else None
         self.source_name = d.get("name", "")
         self.use_for = use_for
+        # a component built from a circuit works like the circuit inside it
+        self.subcircuit = copy.deepcopy(d.get("subcircuit")) or None
         # a copy of a built-in part keeps that part's simulation model (it is matched by pin names)
-        self.sim_model = d.get("sim") or (d.get("id") if (not d.get("custom") and d.get("id") in SIM_MODELS) else None)
+        self.sim_model = None if self.subcircuit else (
+            d.get("sim") or (d.get("id") if (not d.get("custom") and d.get("id") in SIM_MODELS) else None))
         if image is not None:
             d["image"] = image
         if duplicate:
@@ -2512,6 +2682,7 @@ class ComponentEditor(tk.Toplevel):
         self.v_side = tk.StringVar(value="left")
         self.v_dip = tk.IntVar(value=8)
         self.v_mcu = tk.BooleanVar(value=bool(d.get("microcontroller")))
+        self.v_replace = tk.BooleanVar(value=True)
 
         self._build(d)
         for v in (self.v_name, self.v_prefix, self.v_value, self.v_color, self.v_auto, self.v_w, self.v_h):
@@ -2537,7 +2708,7 @@ class ComponentEditor(tk.Toplevel):
                     for _ in range(max(0, pos - last[side] - 1)):
                         rows.append({"kind": "gap", "name": "", "side": side})
                 last[side] = pos
-                rows.append({"kind": "pin", "name": p.get("name", ""), "side": side})
+                rows.append({"kind": "pin", "name": p.get("name", ""), "side": side, "inner": p.get("inner")})
         else:
             for p in pins:
                 rows.append({"kind": "pin", "name": p.get("name", ""),
@@ -2583,6 +2754,8 @@ class ComponentEditor(tk.Toplevel):
             idx[s] += 1
             if r["kind"] == "pin":
                 pins.append({"name": r["name"], "side": s, "pos": pos})
+                if self.subcircuit and r.get("inner"):
+                    pins[-1]["inner"] = list(r["inner"])
         d = {"id": self.edit_id or "preview", "name": self.v_name.get().strip() or "New Part",
              "category": self.v_cat.get().strip() or "My Components",
              "prefix": re.sub(r"[^A-Za-z_]", "", self.v_prefix.get()) or "U",
@@ -2593,10 +2766,13 @@ class ComponentEditor(tk.Toplevel):
             d["microcontroller"] = True
         if self.image:
             d["image"] = self.image
-        if self.sim_model:
-            d["sim"] = self.sim_model
-        if self.logic.strip():
-            d["logic"] = self.logic
+        if self.subcircuit:
+            d["subcircuit"] = self.subcircuit
+        else:
+            if self.sim_model:
+                d["sim"] = self.sim_model
+            if self.logic.strip():
+                d["logic"] = self.logic
         return d
 
     # ---- logic ----
@@ -2604,7 +2780,31 @@ class ComponentEditor(tk.Toplevel):
         return [r["name"] for r in self.rows if r["kind"] == "pin" and r["name"]]
 
     def _edit_logic(self):
+        if self.subcircuit:
+            if not messagebox.askyesno(APP_NAME, "This part works like the circuit inside it.\n\nStop using that "
+                                                 "circuit and describe the part with logic equations instead?",
+                                       parent=self):
+                return
+            self.subcircuit = None
+            for r in self.rows:
+                r.pop("inner", None)
+            self._refresh_rows()
         LogicDialog(self)
+
+    def _inside_text(self, r):
+        """What a pin of a component built from a circuit is joined to inside it."""
+        if r["kind"] != "pin":
+            return ""
+        inn = r.get("inner")
+        comps = {c["id"]: c for c in (self.subcircuit or {}).get("comps", [])}
+        c = comps.get(inn[0]) if inn else None
+        if c is None:
+            return "— (not connected inside)"
+        rd = self.app.rdef(c)
+        if c["def"] == PORT_DEF:
+            return "Component Pin “%s”" % (c.get("label") or "?")
+        pn = rd.pins[inn[1]]["name"] if inn[1] < len(rd.pins) else "?"
+        return "%s · pin %s" % (c.get("label") or rd.name, pn)
 
     def set_logic(self, text):
         self.logic = text or ""
@@ -2627,13 +2827,27 @@ class ComponentEditor(tk.Toplevel):
         lbl = getattr(self, "logic_lbl", None)
         if lbl is None:
             return
+        if self.subcircuit:
+            sub = self.subcircuit
+            n = sum(1 for c in sub.get("comps", []) if c.get("def") != PORT_DEF)
+            free = sum(1 for r in self.rows if r["kind"] == "pin" and not r.get("inner"))
+            txt = ("✓  Works like the circuit inside it (%d part%s, %d wire%s). To change that circuit, "
+                   "right-click the part on the canvas › Show the circuit inside."
+                   % (n, "" if n == 1 else "s", len(sub.get("wires", [])), "" if len(sub.get("wires", [])) == 1 else "s"))
+            if free:
+                txt += "  %d pin%s you added here %s not connected inside." % (free, "" if free == 1 else "s",
+                                                                             "is" if free == 1 else "are")
+            lbl.configure(text=txt, foreground=C["ok"])
+            self.b_logic.configure(text="Use equations instead…")
+            return
         if not self.logic.strip():
             if self.sim_model:
                 txt, col = ("Simulates like the built-in part it was copied from. Add logic equations to "
                             "replace that with your own behaviour."), C["muted"]
             else:
-                txt, col = ("None yet. Add logic equations (like  Y = A & B) to make this part work as a "
-                            "digital chip in the simulator."), C["muted"]
+                txt, col = ("Not simulated yet. To make it work, build its circuit on the canvas, select it and "
+                            "click Make component. For a digital chip you can instead describe it with logic "
+                            "equations (like  Y = A & B)."), C["muted"]
             self.b_logic.configure(text="Add logic…")
         else:
             prog = logic_program(self.logic, self._pin_names())
@@ -2647,6 +2861,8 @@ class ComponentEditor(tk.Toplevel):
     # ---- UI ----
     def _build(self, d):
         fam = self.fam
+        if self.from_sel:
+            self._build_banner()
         outer = ttk.Frame(self, style="Bg.TFrame", padding=12)
         outer.pack(fill="both", expand=True)
         outer.columnconfigure(1, weight=1)
@@ -2753,13 +2969,15 @@ class ComponentEditor(tk.Toplevel):
         tf.grid(row=4, column=0, sticky="nsew")
         tf.columnconfigure(0, weight=1)
         tf.rowconfigure(0, weight=1)
-        self.tree = ttk.Treeview(tf, columns=("n", "name", "side"), show="headings", selectmode="extended")
+        self.tree = ttk.Treeview(tf, columns=("n", "name", "side", "inside"), show="headings", selectmode="extended")
         self.tree.heading("n", text="#")
         self.tree.heading("name", text="Pin name")
         self.tree.heading("side", text="Side")
+        self.tree.heading("inside", text="Connects inside to")
         self.tree.column("n", width=40, stretch=False, anchor="center")
-        self.tree.column("name", width=160)
-        self.tree.column("side", width=80, stretch=False)
+        self.tree.column("name", width=140)
+        self.tree.column("side", width=70, stretch=False)
+        self.tree.column("inside", width=170)
         self.tree.grid(row=0, column=0, sticky="nsew")
         sb = ttk.Scrollbar(tf, orient="vertical", command=self.tree.yview)
         sb.grid(row=0, column=1, sticky="ns")
@@ -2794,11 +3012,12 @@ class ComponentEditor(tk.Toplevel):
         lgf = ttk.Frame(mid, style="Inner.TFrame")
         lgf.grid(row=8, column=0, sticky="ew", pady=(12, 0))
         lgf.columnconfigure(0, weight=1)
-        ttk.Label(lgf, text="Logic (for the simulator)", style="Card.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(lgf, text="How it works in the simulator", style="Card.TLabel").grid(row=0, column=0, sticky="w")
         self.b_logic = ttk.Button(lgf, text="Add logic…", command=self._edit_logic)
-        self.b_logic.grid(row=0, column=1, rowspan=2, sticky="ne", padx=(8, 0))
-        Tooltip(self.b_logic, "Describe what the chip does with equations like  Y = A & B  or  Q = D on CLK")
-        self.logic_lbl = ttk.Label(lgf, text="", style="Hint.TLabel", wraplength=int(320 * self.app.ui_scale),
+        self.b_logic.grid(row=2, column=0, sticky="w", pady=(6, 0))
+        Tooltip(self.b_logic, "For digital chips: describe what it does with equations like  Y = A & B  "
+                              "or  Q = D on CLK")
+        self.logic_lbl = ttk.Label(lgf, text="", style="Hint.TLabel", wraplength=int(400 * self.app.ui_scale),
                                    justify="left")
         self.logic_lbl.grid(row=1, column=0, sticky="w")
 
@@ -2820,10 +3039,26 @@ class ComponentEditor(tk.Toplevel):
 
         bar = ttk.Frame(self, style="Bg.TFrame", padding=(12, 0, 12, 12))
         bar.pack(side="bottom", fill="x", before=outer)  # keep the buttons visible on small screens
-        ttk.Button(bar, text="Save to library", style="Accent.TButton", command=self._save).pack(side="right")
+        if self.from_sel:
+            if self.edit_id:
+                save_txt = "Update “%s”" % self.source_name
+            else:
+                save_txt = "Create component"
+        else:
+            save_txt = "Save to library"
+        ttk.Button(bar, text=save_txt, style="Accent.TButton", command=self._save).pack(side="right")
+        if self.from_sel and self.edit_id:
+            b = ttk.Button(bar, text="Save as a new component", command=self._save_as_new)
+            b.pack(side="right", padx=(0, 8))
+            Tooltip(b, "Keep “%s” as it was and save this as a separate part" % self.source_name)
         ttk.Button(bar, text="Cancel", command=self.destroy).pack(side="right", padx=(0, 8))
+        if self.from_sel:
+            ttk.Checkbutton(bar, text="Replace the selected parts with the new component", variable=self.v_replace,
+                            style="TCheckbutton").pack(side="left")
         note = None
-        if self.edit_id:
+        if self.from_sel:
+            pass
+        elif self.edit_id:
             note = "Changes also update every copy of this part in your circuit."
         elif self.use_for in self.app.comps:
             note = ("“%s” is built in, so this saves your own copy with the picture, and %s will use it."
@@ -2883,11 +3118,13 @@ class ComponentEditor(tk.Toplevel):
         for i, r in enumerate(self.rows):
             if r["kind"] == "pin":
                 n += 1
-                vals = (n, r["name"], r["side"])
+                vals = (n, r["name"], r["side"], self._inside_text(r))
             else:
-                vals = ("", "(gap)", r["side"])
+                vals = ("", "(gap)", r["side"], "")
             self.tree.insert("", "end", iid=str(i), values=vals, tags=(r["kind"],))
         self.tree.tag_configure("gap", foreground=C["muted"])
+        self.tree.configure(displaycolumns=("n", "name", "side", "inside") if self.subcircuit
+                            else ("n", "name", "side"))
         if select:
             sel = [str(i) for i in select if 0 <= i < len(self.rows)]
             if sel:
@@ -3004,15 +3241,78 @@ class ComponentEditor(tk.Toplevel):
         if any(not p["name"] for p in d["pins"]):
             messagebox.showwarning(APP_NAME, "Every pin needs a name.", parent=self)
             return
-        if self.logic.strip():
+        if self.logic.strip() and not self.subcircuit:
             prog = logic_program(self.logic, self._pin_names())
             if isinstance(prog, LogicError) and not messagebox.askyesno(
                     APP_NAME, "The part’s logic has a problem:\n\n%s\n\nSave anyway? It won’t simulate until the "
                               "logic is fixed (Edit logic…)." % prog, parent=self):
                 return
+        if self.subcircuit and self.edit_id:
+            inside = set()
+            for c in self.subcircuit.get("comps", []):
+                inside.add(c.get("def"))
+                inside |= self.app.library.parts_inside(c.get("def"))
+            if self.edit_id in inside:
+                messagebox.showwarning(APP_NAME, "The circuit contains “%s” itself, and a component can’t be "
+                                                 "built from itself.\n\nRemove that part from the circuit, or "
+                                                 "click Save as a new component." % self.source_name, parent=self)
+                return
+        if self.from_sel and not any(r.get("inner") for r in self.rows if r["kind"] == "pin"):
+            messagebox.showwarning(APP_NAME, "None of the pins is connected to the circuit inside, so the part "
+                                             "couldn’t do anything. Keep at least one of the pins that were "
+                                             "found for you.", parent=self)
+            return
         d["id"] = self.edit_id or ("custom_" + uuid.uuid4().hex[:10])
-        self.app.save_definition(d, use_for=self.use_for)
+        from_sel, replace = self.from_sel, self.from_sel and self.v_replace.get()
+        app = self.app
         self.destroy()
+        app.save_definition(d, use_for=self.use_for)
+        if replace:
+            n = len(from_sel["cs"])
+            dropped = app.replace_selection_with(from_sel, d["id"])
+            msg = "Saved “%s” to your library and put it in place of the %d selected part%s." % (
+                d["name"], n, "" if n == 1 else "s")
+            if dropped:
+                msg += (" %d wire%s leaving the selection had no matching pin, so %s removed."
+                        % (dropped, "" if dropped == 1 else "s", "it was" if dropped == 1 else "they were"))
+            app.flash(msg, 8000)
+
+    def _save_as_new(self):
+        """Save the circuit as a separate part instead of updating the one it was unpacked from."""
+        if self.v_name.get().strip() == self.source_name:
+            self.v_name.set(self.source_name + " (new)")
+        self.edit_id = None
+        self._save()
+
+    def _build_banner(self):
+        """Explains what is happening when a selection is turned into a component."""
+        spec = self.from_sel
+        n = len(spec["cs"])
+        if spec.get("base"):
+            head = "Update “%s” with the circuit you changed" % self.source_name
+            body = ("Its pins come from the Component Pins in your selection. Saving updates every copy of “%s” "
+                    "in your circuit (wires stay on pins with the same name)." % self.source_name
+                    if spec["mode"] == "ports" else
+                    "Its pins come from the wires that leave your selection. Saving updates every copy of “%s”."
+                    % self.source_name)
+        elif spec["mode"] == "ports":
+            head = "Make a component from the %d selected part%s" % (n, "" if n == 1 else "s")
+            body = ("Each Component Pin in your selection became a pin, named after its label. Give the part a "
+                    "name, check which side each pin is on, and click Create component. It will work in the "
+                    "simulator exactly like the circuit inside it.")
+        else:
+            head = "Make a component from the %d selected part%s" % (n, "" if n == 1 else "s")
+            body = ("Every wire that leaves your selection, and every unconnected pin, became a pin. Rename them "
+                    "(select one, type a name above the list, click Update selected) and remove any you don’t "
+                    "need. Tip: to choose the pins yourself, add Component Pins (under Building Blocks) to your "
+                    "circuit before selecting it.")
+        bn = tk.Frame(self, bg=C["accent_light"], padx=14, pady=8)
+        bn.pack(side="top", fill="x")
+        self._banner = bn
+        tk.Label(bn, text=head, bg=C["accent_light"], fg=C["accent_dark"], font=(self.fam, 11, "bold"),
+                 anchor="w").pack(fill="x")
+        tk.Label(bn, text=body, bg=C["accent_light"], fg=C["text"], anchor="w", justify="left",
+                 wraplength=int(1040 * self.app.ui_scale)).pack(fill="x")
 
 
 class LogicDialog(tk.Toplevel):
@@ -3311,6 +3611,8 @@ SHORTCUTS = [
     ("Delete", "Delete selection"),
     ("Ctrl+D", "Duplicate"),
     ("Ctrl+C / Ctrl+V", "Copy / paste"),
+    ("Ctrl+G", "Make a component from the selected circuit"),
+    ("Ctrl+Shift+G", "Show the circuit inside a component"),
     ("Ctrl+Z / Ctrl+Y", "Undo / redo"),
     ("Mouse wheel", "Zoom in / out"),
     ("Right- or middle-drag", "Move around (pan)"),
@@ -3528,6 +3830,8 @@ class App:
         ex.add_command(label="Transistor switch (simulate)", command=lambda: self.load_example("transistor"))
         ex.add_command(label="555 LED blinker (simulate)", command=lambda: self.load_example("blinker"))
         ex.add_command(label="2-bit counter with flip-flops (simulate)", command=lambda: self.load_example("counter"))
+        ex.add_separator()
+        ex.add_command(label="Half adder: make your own component", command=lambda: self.load_example("halfadder"))
         fm.add_cascade(label="Open example", menu=ex)
         self.recent_menu = tk.Menu(fm, tearoff=0)
         fm.add_cascade(label="Recent files", menu=self.recent_menu)
@@ -3556,6 +3860,10 @@ class App:
         em.add_command(label="Flip", accelerator="F", command=self.flip_sel)
         em.add_separator()
         em.add_command(label="Select all", accelerator="Ctrl+A", command=self.select_all)
+        em.add_separator()
+        em.add_command(label="Make component from selection…", accelerator="Ctrl+G",
+                       command=self.make_component_from_selection)
+        em.add_command(label="Show the circuit inside", accelerator="Ctrl+Shift+G", command=self.unpack_component)
         m.add_cascade(label="Edit", menu=em)
 
         vm = tk.Menu(m, tearoff=0)
@@ -3583,7 +3891,12 @@ class App:
         m.add_cascade(label="View", menu=vm)
 
         cm = tk.Menu(m, tearoff=0)
-        cm.add_command(label="New component…", command=self.new_component)
+        cm.add_command(label="Make component from selection…", accelerator="Ctrl+G",
+                       command=self.make_component_from_selection)
+        cm.add_command(label="Show the circuit inside selected component", accelerator="Ctrl+Shift+G",
+                       command=self.unpack_component)
+        cm.add_separator()
+        cm.add_command(label="New component (draw pins only)…", command=self.new_component)
         cm.add_command(label="Edit selected component type…", command=self.edit_selected_def)
         cm.add_separator()
         cm.add_command(label="Import components…", command=self.import_library)
@@ -3629,9 +3942,11 @@ class App:
         tb = ttk.Frame(self.root, style="Toolbar.TFrame", padding=(8, 5))
         tb.pack(side="top", fill="x")
         # right-hand buttons are packed first so they stay visible in a narrow window
-        nb = ttk.Button(tb, text="+ New Component", style="Accent.TButton", command=self.new_component, takefocus=False)
+        nb = ttk.Button(tb, text="+ New Component", style="Accent.TButton", takefocus=False,
+                        command=lambda: self.new_component_menu(nb))
         nb.pack(side="right")
-        Tooltip(nb, "Create your own part with any pins")
+        Tooltip(nb, "Make your own part from the circuit you selected (Ctrl+G),\n"
+                    "or draw a part with pins only")
         self.b_sim = ttk.Button(tb, text="▶  Simulate", style="Sim.TButton", command=self.sim_toggle, takefocus=False)
         self.b_sim.pack(side="right", padx=(0, 8))
         Tooltip(self.b_sim, "Run the circuit: live voltages and currents (F5)")
@@ -3831,6 +4146,9 @@ class App:
             r.bind("<Control-%s>" % k, text_safe(lambda e: self.duplicate()))
         for k in ("a", "A"):
             r.bind("<Control-%s>" % k, canvas(lambda e: self.select_all()))
+        for k in ("g", "G"):
+            r.bind("<Control-%s>" % k, text_safe(lambda e: self.unpack_component() if shifted(e)
+                                                  else self.make_component_from_selection()))
         r.bind("<Delete>", canvas(lambda e: self.delete_sel()))
         r.bind("<BackSpace>", canvas(lambda e: self.backspace()))
         r.bind("<Escape>", anywhere(lambda e: self.escape()))
@@ -4195,69 +4513,8 @@ class App:
     def compute_nets(self):
         if self._nets_cache is not None:
             return self._nets_cache
-        parent = {}
-
-        def find(k):
-            parent.setdefault(k, k)
-            while parent[k] != k:
-                parent[k] = parent[parent[k]]
-                k = parent[k]
-            return k
-
-        def union(a, b):
-            ra, rb = find(a), find(b)
-            if ra != rb:
-                parent[rb] = ra
-
-        wired = set()
-        for w in self.wires.values():
-            a, b = tuple(w["a"]), tuple(w["b"])
-            if a[0] in self.comps and b[0] in self.comps:
-                union(a, b)
-                wired.update((a, b))
-        rails = {}
-        for cid, c in self.comps.items():
-            if c["def"] == "ground" and (cid, 0) in wired:
-                rails.setdefault("GND", []).append((cid, 0))
-            elif c["def"] == "vcc" and (cid, 0) in wired:
-                rails.setdefault("PWR:" + (c.get("value") or "VCC").strip(), []).append((cid, 0))
-        for keys in rails.values():
-            for k in keys[1:]:
-                union(keys[0], k)
-        groups = {}
-        for k in list(parent):
-            groups.setdefault(find(k), []).append(k)
-        order = {cid: i for i, cid in enumerate(self.comps)}
-        nets = []
-        for g in groups.values():
-            g.sort(key=lambda k: (order.get(k[0], 0), k[1]))
-            nets.append(g)
-        nets.sort(key=lambda g: (order.get(g[0][0], 0), g[0][1]))
-        out, n, used = [], 1, set()
-        for g in nets:
-            defs = [self.comps[k[0]]["def"] for k in g]
-            name = None
-            if "ground" in defs:
-                name = "GND"
-            else:
-                for k in g:
-                    c = self.comps[k[0]]
-                    if c["def"] == "vcc":
-                        name = re.sub(r"\s+", "", c.get("value") or "VCC")
-                        break
-            if not name:
-                name = "N%d" % n
-                n += 1
-            base, i = name, 2
-            while name in used:
-                name = "%s_%d" % (base, i)
-                i += 1
-            used.add(name)
-            gs = set(g)
-            ws = [wid for wid, w in self.wires.items() if tuple(w["a"]) in gs]
-            out.append({"name": name, "pins": g, "wires": ws})
-        self._nets_cache = out
-        return out
+        self._nets_cache = compute_nets_of(self.comps, self.wires.values())
+        return self._nets_cache
 
     def pin_net_map(self):
         m = {}
@@ -5015,6 +5272,12 @@ class App:
             rd = self.rdef(self.comps[cid])
             m.add_command(label="Edit component type…" if rd.custom else "Copy as new component type…",
                           command=self.edit_selected_def)
+            m.add_separator()
+            n = len(self.sel_comps())
+            m.add_command(label="Make component from %s…   Ctrl+G" % ("these %d parts" % n if n > 1 else "this part"),
+                          command=self.make_component_from_selection)
+            if self.is_block(cid) and n == 1:
+                m.add_command(label="Show the circuit inside   Ctrl+Shift+G", command=lambda: self.unpack_component(cid))
             self._plot_menu_items(m, cid)
             m.add_separator()
             m.add_command(label="Delete   Del", command=self.delete_sel)
@@ -5037,7 +5300,9 @@ class App:
             m.add_command(label="Select all   Ctrl+A", command=self.select_all)
             m.add_command(label="Fit to window   0", command=self.fit)
             m.add_separator()
-            m.add_command(label="New component…", command=self.new_component)
+            m.add_command(label="Make component from selection…   Ctrl+G", command=self.make_component_from_selection,
+                          state="normal" if self.sel_comps() else "disabled")
+            m.add_command(label="New component (draw pins only)…", command=self.new_component)
         try:
             m.tk_popup(e.x_root, e.y_root)
         finally:
@@ -5088,6 +5353,8 @@ class App:
             ("3", "While wiring, click empty space to add bends."),
             ("4", "Click a part to change its label and value here, or give it a picture."),
             ("5", "Press  ▶ Simulate  to see the circuit run: live voltages, currents and glowing LEDs."),
+            ("6", "Make your own part: build its circuit, select it, then  + New Component › From the "
+                  "selected circuit  (Ctrl+G). Component Pins (Building Blocks) set its pins."),
         ]
         sf = ttk.Frame(f, style="Panel.TFrame")
         sf.grid(row=3, column=0, sticky="ew")
@@ -5135,6 +5402,11 @@ class App:
             if rd.description:
                 ttk.Label(info, text=rd.description, style="Hint.TLabel", wraplength=wl, justify="left").pack(
                     anchor="w", pady=(4, 0))
+            if self.is_block(cid):
+                ib = ttk.Button(info, text="Show the circuit inside", command=lambda: self.unpack_component(cid))
+                ib.pack(anchor="w", pady=(6, 0))
+                Tooltip(ib, "Put the circuit this part is made of back on the canvas to change it.\n"
+                            "Then keep it selected and click Make component to update every copy.")
             v_mcu = tk.BooleanVar(value=self.is_mcu(c))
             mc = ttk.Checkbutton(info, text="Microcontroller / dev board", variable=v_mcu, style="Card.TCheckbutton",
                                  command=lambda: self.set_mcu(cid, v_mcu.get()))
@@ -5224,6 +5496,13 @@ class App:
         if rd.custom:
             ttk.Button(f, text="Edit component type…", command=self.edit_selected_def).grid(
                 row=r, column=0, columnspan=2, sticky="w", pady=(8, 0))
+            r += 1
+        if self.comps[cid]["def"] == PORT_DEF and not simming:
+            self._head("Component Pin", r)
+            ttk.Label(f, text="Its label is the pin name. Select it together with your circuit and click Make "
+                              "component: it becomes a pin of the new part.", style="Hint.TLabel",
+                      wraplength=wl, justify="left").grid(row=r + 1, column=0, columnspan=2, sticky="w")
+            r += 2
         f.columnconfigure(0, weight=1)
 
     def show_picture(self, rd):
@@ -5341,14 +5620,55 @@ class App:
             ttk.Button(bf, text="Rotate", command=lambda: self.rotate_sel(1)).pack(side="left")
             ttk.Button(bf, text="Duplicate", command=self.duplicate).pack(side="left", padx=4)
         ttk.Button(bf, text="Delete", style="Danger.TButton", command=self.delete_sel).pack(side="left")
+        row = 3
+        if cs:
+            self._make_component_box(row, cs)
+            row += 2
         if ws:
-            self._head("Wire color", 3)
-            self._color_swatches(4, ws, None)
+            self._head("Wire color", row)
+            self._color_swatches(row + 1, ws, None)
+
+    def _make_component_box(self, row, cs):
+        """Properties panel: turn the selection into a component."""
+        wl = self.props_width - 30
+        self._head("Make your own component", row)
+        bx = ttk.Frame(self.props, style="Panel.TFrame")
+        bx.grid(row=row + 1, column=0, sticky="ew")
+        chosen = set(cs)
+        ports = [c.get("label") or "?" for cid, c in self.comps.items() if cid in chosen and c["def"] == PORT_DEF]
+        if ports:
+            txt = ("Turn this circuit into one reusable part. Its pins will be the %d Component Pin%s you "
+                   "selected: %s." % (len(ports), "" if len(ports) == 1 else "s", ", ".join(ports[:8])
+                                       + (" …" if len(ports) > 8 else "")))
+        else:
+            txt = ("Turn this circuit into one reusable part that works in the simulator. Wires leaving the "
+                   "selection become its pins. To choose and name the pins yourself, add Component Pins "
+                   "(under Building Blocks) first.")
+        ttk.Label(bx, text=txt, style="Hint.TLabel", wraplength=wl, justify="left").pack(anchor="w")
+        ttk.Button(bx, text="Make component…", style="Accent.TButton",
+                   command=self.make_component_from_selection).pack(anchor="w", pady=(6, 0))
 
     # ------------------------------------------------------------ components (definitions)
     def new_component(self):
         self.commit_props()
         ComponentEditor(self)
+
+    def new_component_menu(self, button):
+        """The + New Component button: build a part from the selected circuit, or draw one."""
+        n = len(self.sel_comps())
+        m = tk.Menu(self.root, tearoff=0)
+        m.add_command(label=("From the selected circuit (%d part%s)…" % (n, "" if n == 1 else "s")) if n
+                      else "From a circuit… (select its parts first)", accelerator="Ctrl+G",
+                      command=self.make_component_from_selection)
+        m.add_command(label="Show the circuit inside the selected part", accelerator="Ctrl+Shift+G",
+                      command=self.unpack_component,
+                      state="normal" if n == 1 and self.is_block(self.sel_comps()[0]) else "disabled")
+        m.add_separator()
+        m.add_command(label="Draw a part with pins only…", command=self.new_component)
+        try:
+            m.tk_popup(button.winfo_rootx(), button.winfo_rooty() + button.winfo_height())
+        finally:
+            m.grab_release()
 
     def edit_lib_def(self):
         did = self.lib_selected_def()
@@ -5377,6 +5697,12 @@ class App:
         if used:
             messagebox.showwarning(APP_NAME, "“%s” is used in this circuit (%s).\nDelete those parts first."
                                    % (d["name"], ", ".join(used[:8])))
+            return
+        inside = self.library.used_inside(did)
+        if inside:
+            messagebox.showwarning(APP_NAME, "“%s” is used inside %s, so it can’t be deleted.\nDelete %s first."
+                                   % (d["name"], ", ".join("“%s”" % n for n in inside[:5]),
+                                      "that component" if len(inside) == 1 else "those components"))
             return
         if messagebox.askyesno(APP_NAME, "Delete “%s” from your component library?" % d["name"]):
             self.library.delete(did)
@@ -5459,6 +5785,315 @@ class App:
             msg += " %d wire%s removed because a pin was deleted or renamed." % (dropped, "" if dropped == 1 else "s")
         self.flash(msg, 6000)
 
+    # ------------------------------------------------------------ components built from a circuit
+    def is_block(self, cid):
+        """Is this placed part one the student made from a circuit?"""
+        c = self.comps.get(cid)
+        d = self.library.get(c["def"]) if c else None
+        return bool(d and d.get("subcircuit"))
+
+    def make_component_from_selection(self):
+        """Turn the selected parts, and the wires between them, into a new component."""
+        self.commit_props()
+        if self.mode != "idle":
+            self.cancel_mode()
+        cs = [cid for cid in self.comps if ("c", cid) in self.sel]
+        if not cs:
+            messagebox.showinfo(APP_NAME, "First select the circuit that should go inside your component: drag a "
+                                          "box around it, or Ctrl+click its parts.\n\nTip: add a Component Pin "
+                                          "(under Building Blocks) for each connection the new part needs, and "
+                                          "name it A, B, OUT …")
+            return
+        spec = self._selection_spec(cs)
+        if isinstance(spec, str):
+            messagebox.showinfo(APP_NAME, spec)
+            return
+        ComponentEditor(self, spec["def"], from_selection=spec)
+
+    @staticmethod
+    def _net_key(root, k):
+        k = tuple(k)
+        return ("net", root[k]) if k in root else ("pin",) + k
+
+    def _selection_spec(self, cs):
+        """Work out the new component's pins and inside circuit from the selected parts.
+
+        Pins come from the Component Pins in the selection.  Without any, every wire that leaves the
+        selection becomes a pin, and so does every unconnected pin of the selected parts."""
+        cset = set(cs)
+        inner = {}
+        for cid in cs:
+            c = copy.deepcopy(self.comps[cid])
+            c.pop("unpacked_from", None)
+            inner[cid] = c
+        iw = {wid: copy.deepcopy(w) for wid, w in self.wires.items() if w["a"][0] in cset and w["b"][0] in cset}
+        crossing = []
+        for wid, w in self.wires.items():
+            ina, inb = w["a"][0] in cset, w["b"][0] in cset
+            if ina != inb:
+                crossing.append((wid, "a" if ina else "b"))
+        root = {}
+        for i, net in enumerate(compute_nets_of(inner, iw.values())):
+            for k in net["pins"]:
+                root[tuple(k)] = i
+
+        def box(ids):
+            bs = [self.comp_bbox(self.comps[cid]) for cid in ids]
+            return (min(b[0] for b in bs), min(b[1] for b in bs), max(b[2] for b in bs), max(b[3] for b in bs))
+        ports = [cid for cid in cs if self.comps[cid]["def"] == PORT_DEF]
+        core = box([cid for cid in cs if cid not in ports] or cs)
+
+        def outside_side(px, py):
+            # which side of the circuit this point is furthest outside of
+            far = {"left": core[0] - px, "right": px - core[2], "top": core[1] - py, "bottom": py - core[3]}
+            return max(("left", "right", "top", "bottom"), key=lambda s: far[s])
+
+        pins = []
+        if ports:
+            mode = "ports"
+            for cid in ports:
+                c = self.comps[cid]
+                pins.append({"name": (c.get("label") or "").strip() or "P", "inner": [cid, 0],
+                             "side": outside_side(c["x"], c["y"]), "at": (c["x"], c["y"])})
+        else:
+            mode = "auto"
+            seen = set()
+            for wid, end in crossing:
+                w = self.wires[wid]
+                k = tuple(w[end])
+                if self._net_key(root, k) in seen:
+                    continue
+                seen.add(self._net_key(root, k))
+                out = self.pin_world(tuple(w["b" if end == "a" else "a"]))
+                pins.append({"name": self.rdef(self.comps[k[0]]).pins[k[1]]["name"], "inner": list(k),
+                             "owner": self.comps[k[0]].get("label") or "", "side": outside_side(*out), "at": out})
+            wired = self.connected_pins()
+            for cid in cs:
+                c = self.comps[cid]
+                if c["def"] in ("ground", "vcc", "probe"):
+                    continue
+                rd = self.rdef(c)
+                opt = rd.raw.get("optional_pins", ())
+                for i, p in enumerate(rd.pins):
+                    if (cid, i) in wired or p["name"] in opt:
+                        continue
+                    dx, dy = dir_to_world(c, *DIRS[p["dir"]])
+                    side = ("right" if dx > 0 else "left") if dx else ("bottom" if dy > 0 else "top")
+                    pins.append({"name": p["name"], "inner": [cid, i], "owner": c.get("label") or "",
+                                 "side": side, "at": self.pin_world((cid, i))})
+            # pins called 1, 2 … or used twice get their part's label in front (R1_2, U1_A)
+            counts = {}
+            for p in pins:
+                counts[p["name"]] = counts.get(p["name"], 0) + 1
+            used = set()
+            for p in pins:
+                nm = p["name"]
+                if (counts[nm] > 1 or re.fullmatch(r"\d+", nm)) and p["owner"]:
+                    nm = "%s_%s" % (p["owner"], nm)
+                base, n = nm, 2
+                while nm in used:
+                    nm, n = "%s_%d" % (base, n), n + 1
+                used.add(nm)
+                p["name"] = nm
+        if not pins:
+            return ("Nothing in the selection can become a pin of the new part.\n\nAdd a Component Pin (under "
+                    "Building Blocks) for each connection the part needs, wire it to your circuit, give it a "
+                    "name (A, B, OUT …), then select everything again and click Make component.")
+        for p in pins:
+            if is_ground_pin(p["name"]):
+                p["side"] = "bottom"
+            elif is_power_pin(p["name"]):
+                p["side"] = "top"
+
+        # updating a component that was unpacked onto the canvas: keep its name, look and pin order
+        unpacked = {self.comps[cid].get("unpacked_from") for cid in cs} - {None}
+        base = self.library.get(unpacked.pop()) if len(unpacked) == 1 else None
+        if not (base and base.get("custom") and base.get("subcircuit")):
+            base = None
+        order = {}
+        if base:
+            for i, bp in enumerate(base.get("pins", [])):
+                order.setdefault(bp["name"], (i, bp.get("side", "left")))
+            for p in pins:
+                if p["name"] in order:
+                    p["side"] = order[p["name"]][1]
+        sides = {s: [] for s in ComponentEditor.SIDES}
+        for p in pins:
+            sides[p["side"]].append(p)
+        pins_def = []
+        for s in ComponentEditor.SIDES:
+            along = 1 if s in ("left", "right") else 0
+            sides[s].sort(key=lambda p: (order.get(p["name"], (10 ** 6,))[0], p["at"][along], p["at"][1 - along]))
+            for i, p in enumerate(sides[s]):
+                pins_def.append({"name": p["name"], "side": s, "pos": i + 1, "inner": p["inner"]})
+
+        # store the circuit with its top-left corner near (0, 0)
+        x0, y0, _x1, _y1 = box(cs)
+        ox, oy = -int(math.floor(x0)), -int(math.floor(y0))
+        for c in inner.values():
+            c["x"] += ox
+            c["y"] += oy
+        for w in iw.values():
+            w["bends"] = [[b[0] + ox, b[1] + oy] for b in w.get("bends", [])]
+        kinds = {}
+        for c in inner.values():
+            if c["def"] != PORT_DEF:
+                nm = self.rdef(c).name
+                kinds[nm] = kinds.get(nm, 0) + 1
+        desc = "Built from a circuit: " + ", ".join("%d × %s" % (n, k) for k, n in kinds.items()) + "." if kinds else ""
+        sub = {"comps": list(inner.values()), "wires": list(iw.values())}
+        if base:
+            d = copy.deepcopy(base)
+            d.update({"pins": pins_def, "subcircuit": sub})
+            d.pop("logic", None)
+            d.pop("sim", None)
+        else:
+            d = {"name": "", "category": "My Components", "prefix": "U", "value": "", "description": desc,
+                 "color": "#dbeafe", "symbol": "box", "pins": pins_def, "subcircuit": sub}
+        cx0, cy0, cx1, cy1 = box(cs)
+        return {"def": d, "cs": cs, "crossing": crossing, "root": root, "mode": mode,
+                "base": base["id"] if base else None, "center": ((cx0 + cx1) / 2.0, (cy0 + cy1) / 2.0)}
+
+    def replace_selection_with(self, spec, did):
+        """Swap the selected circuit for one copy of the component made from it; wires that left the
+        selection are moved onto the matching pins."""
+        d = self.library.get(did)
+        rd = self.library.resolve(did)
+        cset = {cid for cid in spec["cs"] if cid in self.comps}
+        if not d or not cset:
+            return 0
+        pin_of = {}
+        for i, p in enumerate(d.get("pins", [])):
+            if p.get("inner"):
+                pin_of.setdefault(self._net_key(spec["root"], p["inner"]), i)
+        self.checkpoint()
+        nid = new_id()
+        dropped = 0
+        crossing = set()
+        for wid, end in spec["crossing"]:
+            w = self.wires.get(wid)
+            if not w or w[end][0] not in cset:
+                continue
+            k = pin_of.get(self._net_key(spec["root"], w[end]))
+            if k is None:
+                del self.wires[wid]
+                dropped += 1
+                continue
+            w[end] = [nid, k]
+            w["bends"] = []
+            crossing.add(wid)
+        for wid in list(self.wires):
+            w = self.wires[wid]
+            if wid not in crossing and (w["a"][0] in cset or w["b"][0] in cset):
+                del self.wires[wid]
+        for cid in cset:
+            del self.comps[cid]
+        cx, cy = spec["center"]
+        self.comps[nid] = {"id": nid, "def": did, "x": int(round(cx)), "y": int(round(cy)), "rot": 0,
+                           "flip": False, "label": self.next_label(rd.prefix), "value": rd.value}
+        self.sel = {("c", nid)}
+        self.changed()
+        return dropped
+
+    def _free_spot(self, box, c, skip):
+        """Offset that puts a circuit with bounding box `box` as close to part `c` as possible
+        without landing on any other part."""
+        others = [self.comp_bbox(o, 0.8) for oid, o in self.comps.items() if oid != skip]
+        bx0, by0, bx1, by1 = box
+        cx, cy = int(round(c["x"] - (bx0 + bx1) / 2.0)), int(round(c["y"] - (by0 + by1) / 2.0))
+
+        def clear(dx, dy):
+            x0, y0, x1, y1 = bx0 + dx, by0 + dy, bx1 + dx, by1 + dy
+            return not any(x0 < o[2] and o[0] < x1 and y0 < o[3] and o[1] < y1 for o in others)
+        best = None
+        for r in range(0, 61, 2):
+            for dx in range(-r, r + 1, 2):
+                for dy in range(-r, r + 1, 2):
+                    if max(abs(dx), abs(dy)) != r:
+                        continue
+                    if clear(cx + dx, cy + dy):
+                        d = dx * dx + dy * dy
+                        if best is None or d < best[0]:
+                            best = (d, cx + dx, cy + dy)
+            if best is not None:
+                return best[1], best[2]
+        return cx, cy
+
+    def unpack_component(self, cid=None):
+        """Put the circuit inside a component back on the canvas in its place, wired up, so it can be
+        changed.  Selecting it again and clicking Make component updates the component."""
+        if cid is None:
+            cs = self.sel_comps()
+            cid = cs[0] if len(cs) == 1 else None
+        c = self.comps.get(cid)
+        d = self.library.get(c["def"]) if c else None
+        sub = (d or {}).get("subcircuit")
+        if not sub or not sub.get("comps"):
+            self.flash("Select one part you made from a circuit, then choose Show the circuit inside.")
+            return
+        self.commit_props()
+        if self.mode != "idle":
+            self.cancel_mode()
+        inner = sub["comps"]
+        bs = [self.comp_bbox(ic) for ic in inner]
+        x0, y0 = min(b[0] for b in bs), min(b[1] for b in bs)
+        x1, y1 = max(b[2] for b in bs), max(b[3] for b in bs)
+        ox, oy = self._free_spot((x0, y0, x1, y1), c, skip=cid)
+        labels = {cc.get("label") for cc in self.comps.values() if cc["id"] != cid}
+        self.checkpoint()
+        idmap, newsel = {}, set()
+        for ic in inner:
+            nc = copy.deepcopy(ic)
+            nid = new_id()
+            idmap[ic["id"]] = nid
+            nc.update({"id": nid, "x": ic["x"] + ox, "y": ic["y"] + oy, "unpacked_from": d["id"]})
+            prefix = self.rdef(nc).prefix
+            if (nc["def"] != PORT_DEF and nc.get("label") in labels
+                    and re.match(r"^%s\d+$" % re.escape(prefix), nc.get("label", ""))):
+                nc["label"] = self.next_label(prefix)
+            labels.add(nc.get("label"))
+            self.comps[nid] = nc
+            newsel.add(("c", nid))
+        for w in sub.get("wires", []):
+            if w["a"][0] in idmap and w["b"][0] in idmap:
+                nw = copy.deepcopy(w)
+                nid = new_id()
+                nw.update({"id": nid, "a": [idmap[w["a"][0]], w["a"][1]], "b": [idmap[w["b"][0]], w["b"][1]],
+                           "bends": [[b[0] + ox, b[1] + oy] for b in w.get("bends", [])]})
+                nw.setdefault("color", self.wire_color)
+                self.wires[nid] = nw
+                newsel.add(("w", nid))
+        dropped = 0
+        pins = d.get("pins", [])
+        for wid in list(self.wires):
+            w = self.wires[wid]
+            for end in ("a", "b"):
+                if w[end][0] != cid:
+                    continue
+                k = w[end][1]
+                inn = pins[k].get("inner") if k < len(pins) else None
+                if inn and inn[0] in idmap:
+                    w[end] = [idmap[inn[0]], inn[1]]
+                    w["bends"] = []
+                else:
+                    del self.wires[wid]
+                    dropped += 1
+                    break
+        del self.comps[cid]
+        self.sel = newsel
+        self.changed()
+        self.set_status_hint()
+        # make sure the circuit that came out is on screen
+        vx0, vy0 = self.to_world(0, 0)
+        vx1, vy1 = self.to_world(self.cv.winfo_width(), self.cv.winfo_height())
+        if not (vx0 <= x0 + ox and vy0 <= y0 + oy and x1 + ox <= vx1 and y1 + oy <= vy1):
+            self.fit()
+        msg = ("Here is the circuit inside “%s”. Change it, then keep it selected and click Make component "
+               "to update “%s”." % (d["name"], d["name"]))
+        if dropped:
+            msg += " %d wire%s removed (pin not connected inside)." % (dropped, "" if dropped == 1 else "s")
+        self.flash(msg, 9000)
+
     def read_picture(self, path, parent=None):
         """Load a picture file for a component; shows a message and returns None if it fails."""
         parent = parent or self.root
@@ -5538,8 +6173,8 @@ class App:
 
     # ------------------------------------------------------------ files
     def serialize(self):
-        used = {c["def"] for c in self.comps.values()}
-        defs = [self.library.custom[d] for d in used if d in self.library.custom]
+        # custom parts used here, and the custom parts inside components built from a circuit
+        defs = self.library.with_dependencies({c["def"] for c in self.comps.values()})
         return {"format": "circuit-builder", "version": 1, "app_version": APP_VERSION,
                 "components": list(self.comps.values()), "wires": list(self.wires.values()),
                 "definitions": defs,
@@ -5696,7 +6331,9 @@ class App:
         tips = {"rc": "Press ▶ Simulate, then open the Oscilloscope or Simulate › Frequency response.",
                 "transistor": "Press ▶ Simulate, then hold the push button down to switch the LED on.",
                 "blinker": "Press ▶ Simulate to watch the LED blink about once a second.",
-                "counter": "Press ▶ Simulate: the red and green LEDs count 0, 1, 2, 3 in binary, one step per second."}
+                "counter": "Press ▶ Simulate: the red and green LEDs count 0, 1, 2, 3 in binary, one step per second.",
+                "halfadder": "Select everything (Ctrl+A), then press Ctrl+G to turn this half adder into your own "
+                             "part. The four Component Pins become its pins A, B, SUM and CARRY."}
         if name in tips:
             self.flash(tips[name], 8000)
 
@@ -7673,9 +8310,72 @@ def sim_model_of(library, c):
     d = library.get(c["def"])
     if not d:
         return None
+    if d.get("subcircuit"):
+        return "subcircuit"
     if d.get("logic"):
         return "logic"
     return d.get("sim") or d.get("id")
+
+
+class Block(Dev):
+    """A part built from a circuit.  The parts inside it are simulated on their own (the circuit is
+    flattened); this only reports on them: pin voltages, current into each pin, and an LED, lamp or
+    buzzer inside that is on."""
+
+    def __init__(self, sim, comp, nodes, inner, names, n_parts):
+        super().__init__(sim, comp, nodes)
+        self.inner = inner
+        self.names = names
+        self.n_parts = n_parts
+        self.digital = any(isinstance(d, (Gate, FlipFlop, LogicChip)) for d in inner)
+        # current is only reported for pins that aren't on Ground (ground is shared by everything)
+        self.pidx = [k for k, n in enumerate(nodes) if n]
+
+    def currents(self, x):
+        out = []
+        for k in self.pidx:
+            node, s = self.n[k], 0.0
+            for d in self.inner:
+                try:
+                    cur = d.currents(x)
+                except Exception:
+                    continue
+                for j, nd in enumerate(d.n[:len(cur)]):
+                    if nd == node:
+                        s += cur[j]
+            out.append(s)
+        return out
+
+    def info(self, x):
+        out = [("Inside", "%d part%s" % (self.n_parts, "" if self.n_parts == 1 else "s"))]
+        for k, nm in enumerate(self.names[:10]):
+            out.append(("Pin " + nm, fmt_si(self.V(x, k), "V")))
+        return out
+
+    def view(self, x):
+        out, glow = {}, None
+        for d in self.inner:
+            try:
+                v = d.view(x)
+            except Exception:
+                v = None
+            if not v:
+                continue
+            g = v.get("glow")
+            if g and (glow is None or g[1] > glow[1]):
+                glow = g
+            if v.get("sound"):
+                out["sound"] = True
+            sp = v.get("spin")
+            if sp is not None and abs(sp) > abs(out.get("spin", 0.0)):
+                out["spin"] = sp
+            if v.get("cross"):
+                out["cross"] = v["cross"]
+        if glow:
+            out["glow"] = glow
+        if self.digital:
+            out["pinstate"] = [(k, self.V(x, k) > 2.5) for k in range(len(self.n)) if self.n[k]]
+        return out
 
 
 class Sim:
@@ -7754,7 +8454,11 @@ class Sim:
 
     def _build(self, carry):
         app = self.app
-        nets = app.compute_nets()
+        # parts built from a circuit are replaced by the circuit inside them
+        comps, wires, blocks, problems = flatten_circuit(app.library, app.comps, app.wires)
+        nets = compute_nets_of(comps, wires) if (blocks or problems) else app.compute_nets()
+        for cid, msg in problems:
+            self.note("Warning", cid, msg)
         net_of = {}
         gnd = None
         for i, net in enumerate(nets):
@@ -7765,7 +8469,7 @@ class Sim:
         self.wired = set(net_of)
         if gnd is None and nets:
             ref = None
-            for cid, c in app.comps.items():
+            for cid, c in comps.items():
                 pn = {"battery": "−", "dc_source": "−", "ac_source": "2", "square_source": "−",
                       "current_source": "−"}.get(sim_model_of(app.library, c))
                 if pn:
@@ -7775,7 +8479,7 @@ class Sim:
                         ref = net_of[(cid, i)]
                         break
             has_rail = any(sim_model_of(app.library, c) == "vcc" and (cid, 0) in net_of
-                           for cid, c in app.comps.items())
+                           for cid, c in comps.items())
             if ref is None and has_rail:
                 # only power rails: they are measured from an implied 0 V, like the logic parts' own ground
                 gnd = -1
@@ -7798,11 +8502,11 @@ class Sim:
 
         unsupported = []
         rails = {}
-        for cid, c in app.comps.items():
+        for cid, c in comps.items():
             rd = app.rdef(c)
             model = sim_model_of(app.library, c)
             lab = c.get("label") or rd.name
-            if model == "ground":
+            if model in ("ground", PORT_DEF, "subcircuit"):
                 continue
             if model == "vcc":
                 key = (cid, 0)
@@ -7845,9 +8549,24 @@ class Sim:
             self.by_cid[cid] = d
         if unsupported:
             self.note("Info", None, "Not simulated (their pins are left unconnected): %s. Microcontroller boards, "
-                                    "digital modules and parts you made yourself have no simulation model "
-                                    "(give your own parts logic equations to simulate them as chips)."
+                                    "digital modules and parts you drew yourself have no simulation model. To make "
+                                    "your own part work, build its circuit, select it and click Make component."
                       % ", ".join(unsupported))
+        # one read-out device per part built from a circuit, for its readings and glow
+        for bid in blocks:
+            c = comps[bid]
+            rd = app.rdef(c)
+            nodes = []
+            for k in range(len(rd.pins)):
+                key = (bid, k)
+                if key not in self.node_of:
+                    self.node_of[key] = self.new_node("%s.%s" % (c.get("label") or rd.name, rd.pins[k]["name"]))
+                nodes.append(self.node_of[key])
+            inner = [d for cid, d in self.by_cid.items() if cid.startswith(bid + "/")]
+            n_parts = sum(1 for ic in blocks[bid]["subcircuit"].get("comps", []) if ic.get("def") != PORT_DEF)
+            d = Block(self, c, nodes, inner, [p["name"] for p in rd.pins], n_parts)
+            self.devs.append(d)
+            self.by_cid[bid] = d
         k = self.nn
         for d in self.devs:
             if d.nbr:
@@ -8180,10 +8899,10 @@ class Sim:
 def build_example(name):
     comps, wires = [], []
 
-    def add(did, x, y, label, value=None, rot=0):
+    def add(did, x, y, label, value=None, rot=0, flip=False):
         d = next(b for b in BUILTIN_DEFS if b["id"] == did)
         cid = "c%d" % (len(comps) + 1)
-        comps.append({"id": cid, "def": did, "x": x, "y": y, "rot": rot, "flip": False, "label": label,
+        comps.append({"id": cid, "def": did, "x": x, "y": y, "rot": rot, "flip": flip, "label": label,
                       "value": d["value"] if value is None else value, "notes": ""})
         return cid
 
@@ -8302,6 +9021,20 @@ def build_example(name):
         wire(f2, "Q", r2, "1", blue)
         wire(r2, "2", d2, "A", blue)
         wire(d2, "K", g3, "GND", black)
+    elif name == "halfadder":
+        # ready to become a component: select everything and press Ctrl+G
+        pa = add(PORT_DEF, 2, 3, "A", flip=True)
+        pb = add(PORT_DEF, 2, 9, "B", flip=True)
+        x = add("xor", 10, 3, "U1")
+        a = add("and", 10, 9, "U2")
+        ps = add(PORT_DEF, 19, 3, "SUM")
+        pc = add(PORT_DEF, 19, 9, "CARRY")
+        wire(pa, "PIN", x, "A", blue)
+        wire(pa, "PIN", a, "A", blue)
+        wire(pb, "PIN", x, "B", green)
+        wire(pb, "PIN", a, "B", green)
+        wire(x, "Y", ps, "PIN", orange)
+        wire(a, "Y", pc, "PIN", purple)
     else:  # blink
         u = add("arduino_uno", 6, 10, "U1", "")
         r = add("resistor", 15, 17, "R1", "220 Ω")
@@ -8473,8 +9206,11 @@ def _app_show_help(self):
         "4.  Click a part to edit its label (R1, U2 …) and value (1 kΩ, 9 V …) on the right.\n"
         "5.  Tools › Show connections lists every net (pins that share the same voltage).\n"
         "6.  Tools › Check circuit warns about shorts and parts that aren’t connected.\n"
-        "7.  Make your own parts with  + New Component : give it a name, list its pins and\n"
-        "     choose which side each pin is on. It’s saved in your library for next time.\n"
+        "7.  Make your own parts from a circuit: build it, add a Component Pin (Building Blocks) for each\n"
+        "     connection and label it (A, B, OUT …), select it all and press Ctrl+G (or  + New Component ›\n"
+        "     From the selected circuit). The new part works in the simulator just like the circuit inside\n"
+        "     it, and is saved in your library. Right-click a copy › Show the circuit inside to change it.\n"
+        "     ( + New Component › Draw a part with pins only  is for boards and modules that aren’t simulated.)\n"
         "8.  Give a part a picture (a photo of the real module, say): click the part, then\n"
         "     Add picture… on the right, or use Picture › Choose… in the Component Editor.\n"
         "9.  Press  ▶ Simulate  (F5) to run the circuit. Voltages appear on the wires, LEDs and lamps\n"
@@ -8543,9 +9279,14 @@ SIM_HELP = (
     "color), NPN and PNP transistors, N-MOSFETs, op-amps, logic gates and flip-flops (5 V logic), the 555 timer, the 7805 "
     "regulator, the TMP36 temperature sensor (set the temperature), the relay module, the 74HC logic chips and "
     "any part you give logic equations.\n\n"
+    "Your own components\n"
+    "A part you made from a circuit (select it, then + New Component › From the selected circuit) simulates "
+    "the circuit inside it: gates, "
+    "resistors, transistors, LEDs … all work as they did on the canvas. Hover over it for its pin voltages; "
+    "an LED inside it makes the whole part glow.\n\n"
     "Not simulated\n"
     "Microcontroller boards (Arduino, Pico), digital modules (LCD, ultrasonic sensor, servo), generic ICs and "
-    "parts you make yourself without logic. Their pins are left unconnected. A copy of a simulated part (for "
+    "parts you draw with + New Component that have no circuit inside. Their pins are left unconnected. A copy of a simulated part (for "
     "example one you gave a picture) still simulates as long as its pin names stay the same.\n\n"
     "Logic chips\n"
     "The 74HC chips (74HC00, 02, 04, 08, 32, 86 and 74) simulate from logic equations, and so can any part you "
@@ -9001,8 +9742,8 @@ class _SimUI:
         readings = []
         if d is None:
             tk.Label(box, text="This part isn’t simulated, so its pins are left unconnected."
-                     + ("  To make it work as a logic chip, give it logic equations: Edit component type… › "
-                        "Add logic…" if rd.custom else ""),
+                     + ("  To make your own part work, build its circuit on the canvas, select it and click "
+                        "Make component." if rd.custom else ""),
                      bg=C["sim_bg"], fg=C["muted"], wraplength=wl, justify="left").grid(row=0, column=0, sticky="w")
         else:
             try:
@@ -9097,9 +9838,10 @@ class _SimUI:
                      font=(self.fam, 7, "bold")).pack(anchor="w")
             lbl = tk.Label(row, text=msg, bg=C["panel"], fg=C["text"], wraplength=wl, justify="left", anchor="w")
             lbl.pack(anchor="w", fill="x")
-            if cid in self.comps:
+            top = cid.split("/", 1)[0] if cid else None   # a part inside a component: select the component
+            if top in self.comps:
                 lbl.configure(cursor="hand2")
-                lbl.bind("<Button-1>", lambda e, c=cid: self._select_comp(c))
+                lbl.bind("<Button-1>", lambda e, c=top: self._select_comp(c))
         if len(warns) > 7:
             tk.Label(mf, text="+ %d more" % (len(warns) - 7), bg=C["panel"], fg=C["muted"]).pack(anchor="w")
         self._head("While it runs", 4)
