@@ -249,6 +249,8 @@ The last one, *Half adder: make your own component*, is set up for practicing *C
 - Your component library and settings (including light or dark mode and diagram text size) live in `%APPDATA%\CircuitBuilder\`.
   Copy `my_components.cblib` from there to back them up.
 - To open a `.circuit` file by double-clicking, right-click it → *Open with* → choose `CircuitBuilder.exe`.
+- If something goes wrong, the details are written to `errors.log` in the same folder (*Help › About* shows where). Send that file along when reporting a problem.
+- Damaged or hand-edited files are checked when they are opened: parts and wires that can't be used are skipped with a message, and the rest of the circuit opens normally. If your component library file is damaged, a copy is kept as `my_components.cblib.damaged-<date>` before anything is overwritten.
 
 ## For instructors: adding built-in parts
 
@@ -269,13 +271,25 @@ The simulator itself (modified nodal analysis with Newton-Raphson, BDF2 time ste
 
 Rebuild the `.exe` afterwards if you hand that out.
 
+### Running the tests
+
+After changing `circuit_builder.py`, run the regression tests from the project folder (standard library only):
+
+```
+python -m unittest discover -s tests -v
+```
+
+They check file loading (including damaged files), nets, chip logic, the example circuits in the simulator and the main editor actions. The ones that open the app window are skipped when there's no display; on Linux run them under `xvfb-run`. GitHub runs them automatically on every push (see `.github/workflows/tests.yml`).
+
 ## Troubleshooting
 
 - **Nothing happens when I double-click the .bat**: Python isn't on the PATH. Reinstall Python and tick "Add python.exe to PATH".
 - **The exe build fails with `PermissionError: [WinError 5] Access is denied`**: OneDrive (or Dropbox) locked PyInstaller's files. `Build Windows EXE.bat` now builds in your TEMP folder to avoid this; if you still see it, delete any old `build` folder next to the script (pause OneDrive syncing first) and run it again.
 - **Everything looks tiny or huge**: use the zoom buttons or **Fit**. The app follows your Windows display scaling.
 - **Labels are hard to read**: pick *View › Diagram text size › Large*. It makes part names, values, pin names and simulation readings bigger without zooming.
-- **I lost a custom part**: check `%APPDATA%\CircuitBuilder\my_components.cblib`, or re-import a `.cblib` / open a `.circuit` that used it.
+- **I lost a custom part**: check `%APPDATA%\CircuitBuilder\my_components.cblib` (and any `my_components.cblib.damaged-…` copy next to it, which you can import with *Components › Import components…*), or re-import a `.cblib` / open a `.circuit` that used it.
+- **"Something went wrong … Details were saved to errors.log"**: the app kept running, but an action failed. Save your work, and send `errors.log` (from `%APPDATA%\CircuitBuilder\`) to whoever maintains the app.
+- **"The circuit was opened, but … removed"**: the file had parts or wires that couldn't be used (often a file saved before a custom part's pins were changed). Check the circuit and save it to keep the repaired version.
 - **The simulation says "Short circuit"**: a battery, source or power rail has a plain wire (or an ammeter) straight across it. Click the message to find the part.
 - **A part shows "not simulated"**: it has no simulation model (see *What is simulated* above); its pins are left unconnected. For your own parts, build them from a circuit instead.
 - **Make component says nothing can become a pin**: the selection has no wires leaving it and no free pins. Add Component Pins (Building Blocks), wire and name them, and select them together with the circuit.
