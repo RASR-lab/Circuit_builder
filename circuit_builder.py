@@ -52,7 +52,7 @@ except Exception:  # Pillow not installed: pictures still work (PNG/GIF, plus JP
     _PILOps = None
 
 APP_NAME = "Circuit Builder"
-APP_VERSION = "1.6"
+APP_VERSION = "1.7"
 FILE_EXT = ".circuit"
 LIB_EXT = ".cblib"
 G = 24  # pixels per grid unit at 100 % zoom
@@ -1114,13 +1114,12 @@ def render_component(cv, rd, comp, T, z, fam, state="normal", connected=frozense
             wrap = max(20, h * G * z * 0.85)
         big, small = dpx(11, z), dpx(9, z)
         if big >= 5:
-            top = cv.create_text(cx, cy, text=label or rd.name, anchor="s", fill=stroke,
-                                 font=(fam, -big, "bold"), width=wrap, justify="center", tags=tags)
+            cv.create_text(cx, cy, text=label or rd.name, anchor="s", fill=stroke,
+                           font=(fam, -big, "bold"), width=wrap, justify="center", tags=tags)
             if label and small >= 5:
                 sub = rd.name + (("\n" + value) if value else "")
                 cv.create_text(cx, cy + 1, text=sub, anchor="n", fill=C["muted"],
                                font=(fam, -small), width=wrap, justify="center", tags=tags)
-            del top
     elif rd.label_pt is not None:
         lines = []
         if rd.label_mode in ("both", "label") and label:
@@ -1224,21 +1223,274 @@ def data_dir():
 
 def load_json(path, default):
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8-sig") as f:   # -sig: files saved by Notepad start with a BOM
             return json.load(f)
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return default
 
 
 def save_json(path, data):
     tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-    os.replace(tmp, path)
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def new_id():
     return uuid.uuid4().hex[:8]
+
+
+# ---- error log: Tk swallows errors in button/mouse handlers, and the windowed .exe has no console,
+# so problems are written to a file students can send in.
+def error_log_path():
+    return os.path.join(data_dir(), "errors.log")
+
+
+def log_exception(exc_type, exc, tb, context=""):
+    """Write a traceback to errors.log (and the console, if there is one).  Never raises."""
+    text = "".join(traceback.format_exception(exc_type, exc, tb))
+    try:
+        if sys.stderr is not None:
+            sys.stderr.write(text)
+    except Exception:
+        pass
+    path = error_log_path()
+    try:
+        if os.path.getsize(path) > 256 * 1024:
+            os.replace(path, path + ".old")
+    except OSError:
+        pass
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write("---- %s  %s %s  Python %s  %s\n%s\n" % (
+                time.strftime("%Y-%m-%d %H:%M:%S"), APP_NAME, APP_VERSION, sys.version.split()[0], context, text))
+    except OSError:
+        pass
+    return path
+
+
+# --------------------------------------------------------------------------
+# Checking data read from files
+# --------------------------------------------------------------------------
+# .circuit and .cblib files are plain JSON that students share, hand-edit and save with older
+# versions.  Everything read from one goes through these functions first, so a damaged file gives
+# a message instead of an error in the middle of drawing.
+PIN_SIDES = ("left", "right", "top", "bottom")
+MAX_PINS = 512   # most pins a part read from a file may have (a placeholder is drawn with this many at most)
+_HEX_RX = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+
+
+def _as_list(v):
+    return v if isinstance(v, list) else []
+
+
+def _num(v, default=None):
+    """A finite float, or default (bools and text that isn't a number count as missing)."""
+    if isinstance(v, bool):
+        return default
+    try:
+        f = float(v)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return f if math.isfinite(f) else default
+
+
+def _grid(v, default=0):
+    """A grid coordinate: whole numbers stay ints so files stay tidy."""
+    f = _num(v)
+    if f is None:
+        return default
+    return int(f) if f == int(f) else f
+
+
+def _text(v, default=""):
+    if v is None:
+        return default
+    return v if isinstance(v, str) else str(v)
+
+
+def _pin_index(v):
+    f = _num(v)
+    if f is None or f < 0 or f != int(f):
+        return None
+    return int(f)
+
+
+def is_color(v):
+    return isinstance(v, str) and bool(_HEX_RX.match(v))
+
+
+def clean_comp(c):
+    """A placed part read from a file -> a safe copy, or None if it can't be used."""
+    if not isinstance(c, dict):
+        return None
+    cid, did = c.get("id"), c.get("def")
+    if not isinstance(cid, str) or not cid or not isinstance(did, str) or not did:
+        return None
+    out = dict(c)
+    out["x"], out["y"] = _grid(c.get("x")), _grid(c.get("y"))
+    out["rot"] = int(_num(c.get("rot"), 0)) % 4
+    out["flip"] = bool(c.get("flip"))
+    for k in ("label", "value", "notes"):
+        out[k] = _text(c.get(k))
+    for k in ("wiper", "light", "temp"):          # simulation sliders
+        if k in out:
+            v = _num(out[k])
+            if v is None:
+                del out[k]
+            else:
+                out[k] = v
+    if "closed" in out:
+        out["closed"] = bool(out["closed"])
+    if out.get("mcu") is None:
+        out.pop("mcu", None)
+    else:
+        out["mcu"] = bool(out["mcu"])
+    if not isinstance(out.get("unpacked_from"), str):
+        out.pop("unpacked_from", None)
+    return out
+
+
+def clean_wire(w, pin_count=None):
+    """A wire read from a file -> a safe copy, or None.
+    pin_count(part id) gives how many pins that part has (None: no such part).  Without it only the
+    shape of the wire is checked."""
+    if not isinstance(w, dict):
+        return None
+    ends = []
+    for key in ("a", "b"):
+        e = w.get(key)
+        if not isinstance(e, (list, tuple)) or len(e) != 2 or not isinstance(e[0], str):
+            return None
+        i = _pin_index(e[1])
+        if i is None:
+            return None
+        if pin_count is not None:
+            n = pin_count(e[0])
+            if n is None or i >= n:
+                return None
+        ends.append([e[0], i])
+    if ends[0] == ends[1]:
+        return None
+    out = dict(w)
+    out["a"], out["b"] = ends
+    bends = []
+    for b in _as_list(w.get("bends")):
+        if isinstance(b, (list, tuple)) and len(b) == 2:
+            x, y = _num(b[0]), _num(b[1])
+            if x is not None and y is not None:
+                bends.append([_grid(x), _grid(y)])
+    out["bends"] = bends
+    if not is_color(out.get("color")):
+        out.pop("color", None)
+    if not isinstance(out.get("id"), str) or not out["id"]:
+        out.pop("id", None)
+    return out
+
+
+def clean_subcircuit(sub):
+    if not isinstance(sub, dict):
+        return None
+    comps, seen = [], set()
+    for c in _as_list(sub.get("comps")):
+        cc = clean_comp(c)
+        if cc is not None and cc["id"] not in seen:
+            seen.add(cc["id"])
+            comps.append(cc)
+    wires = []
+    for w in _as_list(sub.get("wires")):
+        cw = clean_wire(w, lambda cid: MAX_PINS if cid in seen else None)
+        if cw is not None:
+            wires.append(cw)
+    return {"comps": comps, "wires": wires}
+
+
+def clean_def(d):
+    """A component definition read from a library or circuit file -> a safe copy, or None.
+    Pins are repaired rather than dropped, so wires keep pointing at the same pin numbers."""
+    if not isinstance(d, dict):
+        return None
+    did = d.get("id")
+    if not isinstance(did, str) or not did or not isinstance(d.get("pins"), list):
+        return None
+    out = dict(d)
+    for k in ("name", "category", "prefix", "value", "description"):
+        if k in out:
+            out[k] = _text(out[k])
+    if not out.get("name"):
+        out["name"] = "Part"
+    sym = d.get("symbol", "box")
+    out["symbol"] = sym = sym if isinstance(sym, str) and sym else "box"
+    pins = []
+    for i, p in enumerate(d["pins"]):
+        q = dict(p) if isinstance(p, dict) else {}
+        q["name"] = _text(q.get("name"), str(i + 1))
+        if sym == "box":
+            if q.get("side") not in PIN_SIDES:
+                q["side"] = "left"
+            q["pos"] = _num(q.get("pos"), float(i + 1))
+        else:
+            q["x"], q["y"] = _num(q.get("x"), 0.0), _num(q.get("y"), 0.0)
+            if q.get("dir") not in DIRS:
+                q["dir"] = "L"
+        inn = q.get("inner")
+        if inn is not None:
+            if (isinstance(inn, (list, tuple)) and len(inn) == 2 and isinstance(inn[0], str)
+                    and _pin_index(inn[1]) is not None):
+                q["inner"] = [inn[0], _pin_index(inn[1])]
+            else:
+                del q["inner"]
+        pins.append(q)
+    out["pins"] = pins
+    if sym == "box":
+        out["w"] = int(max(2, min(400, _num(d.get("w"), 4))))
+        out["h"] = int(max(2, min(400, _num(d.get("h"), 3))))
+    for k in ("pivot", "label_pt"):
+        v = out.get(k)
+        if v is not None and not (isinstance(v, (list, tuple)) and len(v) == 2
+                                  and all(_num(a) is not None for a in v)):
+            del out[k]
+    if "color" in out and not is_color(out["color"]):
+        del out["color"]
+    if "image" in out and not valid_picture(out["image"]):
+        del out["image"]
+    for k in ("logic", "sim", "label_mode"):
+        if k in out and not isinstance(out[k], str):
+            del out[k]
+    if "optional_pins" in out:
+        out["optional_pins"] = [p for p in _as_list(out["optional_pins"]) if isinstance(p, str)]
+    if "subcircuit" in out:
+        sub = clean_subcircuit(out["subcircuit"])
+        if sub is None:
+            del out["subcircuit"]
+        else:
+            out["subcircuit"] = sub
+    return out
+
+
+def clean_settings(s):
+    """settings.json -> a dict with sensible types (a damaged file must not stop the app starting)."""
+    if not isinstance(s, dict):
+        return {}
+    out = dict(s)
+    checks = {"wire_style": lambda v: v in ("orthogonal", "straight"),
+              "wire_color": is_color,
+              "text_size": lambda v: v in [k for k, _n, _f in TEXT_SIZES],
+              "theme": lambda v: v in ("light", "dark"),
+              "show_grid": lambda v: isinstance(v, bool),
+              "show_volts": lambda v: isinstance(v, bool)}
+    for k, ok in checks.items():
+        if k in out and not ok(out[k]):
+            del out[k]
+    out["recent"] = [p for p in _as_list(out.get("recent")) if isinstance(p, str)][:8]
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -1748,12 +2000,35 @@ class Library:
         self.path = os.path.join(data_dir(), "my_components" + LIB_EXT)
         self.builtin = {d["id"]: d for d in BUILTIN_DEFS}
         self.custom = {}
-        data = load_json(self.path, {})
-        for d in data.get("components", []):
-            if d.get("id"):
-                d["custom"] = True
-                self.custom[d["id"]] = d
         self._cache = {}
+        self.problem = None   # message for the student if the library file was damaged
+        data = {}
+        if os.path.exists(self.path):
+            data = load_json(self.path, None)
+            if not isinstance(data, dict) or not isinstance(data.get("components", []), list):
+                # Don't start from an empty library and overwrite the file on the next save:
+                # keep a copy so the parts can be recovered.
+                self.problem = self._backup("Your component library file could not be read")
+                data = {}
+        bad = 0
+        for d in data.get("components", []):
+            cd = clean_def(d)
+            if cd is None or cd["id"] in self.builtin:
+                bad += 1
+                continue
+            cd["custom"] = True
+            self.custom[cd["id"]] = cd
+        if bad and not self.problem:
+            self.problem = self._backup("%d damaged component%s in your library could not be loaded"
+                                        % (bad, "" if bad == 1 else "s"))
+
+    def _backup(self, what):
+        dst = "%s.damaged-%s" % (self.path, time.strftime("%Y%m%d-%H%M%S"))
+        try:
+            shutil.copy2(self.path, dst)
+            return "%s. A copy of the old file was saved as:\n%s" % (what, dst)
+        except OSError:
+            return "%s." % what
 
     def get(self, did):
         return self.custom.get(did) or self.builtin.get(did)
@@ -1776,11 +2051,52 @@ class Library:
                 cats.append(d["category"])
         return cats
 
-    def save_def(self, d):
+    def save_def(self, d, persist=True):
         d["custom"] = True
         self.custom[d["id"]] = d
         self._cache.pop(d["id"], None)
-        self.persist()
+        if persist:
+            self.persist()
+
+    def remap_nested(self, did, mapping):
+        """Part type `did` changed its pins (old pin number -> new pin number in `mapping`).  Fix the
+        circuits inside other components that use it, so their wires stay on the same-named pins.
+        Returns how many inner wires had to be removed because their pin is gone."""
+        dropped, touched = 0, False
+        for od in self.custom.values():
+            sub = od.get("subcircuit")
+            if not sub or od["id"] == did:
+                continue
+            users = {c.get("id") for c in sub.get("comps", []) if c.get("def") == did}
+            if not users:
+                continue
+            touched = True
+            keep = []
+            for w in sub.get("wires", []):
+                ok = True
+                for end in ("a", "b"):
+                    e = w.get(end)
+                    if e and e[0] in users:
+                        if e[1] in mapping:
+                            w[end] = [e[0], mapping[e[1]]]
+                        else:
+                            ok = False
+                if ok:
+                    keep.append(w)
+                else:
+                    dropped += 1
+            sub["wires"] = keep
+            for p in od.get("pins", []):
+                inn = p.get("inner")
+                if inn and inn[0] in users:
+                    if inn[1] in mapping:
+                        p["inner"] = [inn[0], mapping[inn[1]]]
+                    else:
+                        p.pop("inner", None)
+            self._cache.pop(od["id"], None)
+        if touched:
+            self.persist()
+        return dropped
 
     def delete(self, did):
         self.custom.pop(did, None)
@@ -1850,7 +2166,9 @@ def compute_nets_of(comps, wires):
         if c["def"] == "ground" and (cid, 0) in wired:
             rails.setdefault("GND", []).append((cid, 0))
         elif c["def"] == "vcc" and (cid, 0) in wired:
-            rails.setdefault("PWR:" + (c.get("value") or "VCC").strip(), []).append((cid, 0))
+            # "+5 V", "5V" and "5 v" are the same rail (spaces, capitals and a leading + don't matter)
+            key = re.sub(r"\s+", "", c.get("value") or "VCC").upper().lstrip("+")
+            rails.setdefault("PWR:" + key, []).append((cid, 0))
     for keys in rails.values():
         for k in keys[1:]:
             union(keys[0], k)
@@ -1863,8 +2181,14 @@ def compute_nets_of(comps, wires):
         g.sort(key=lambda k: (order.get(k[0], 0), k[1]))
         nets.append(g)
     nets.sort(key=lambda g: (order.get(g[0][0], 0), g[0][1]))
+    group_of = {k: gi for gi, g in enumerate(nets) for k in g}
+    wires_of = [[] for _ in nets]
+    for w in wires:
+        gi = group_of.get(tuple(w["a"])) if "id" in w else None
+        if gi is not None:
+            wires_of[gi].append(w["id"])
     out, n, used = [], 1, set()
-    for g in nets:
+    for gi, g in enumerate(nets):
         defs = [comps[k[0]]["def"] for k in g]
         name = None
         if "ground" in defs:
@@ -1890,9 +2214,7 @@ def compute_nets_of(comps, wires):
             name = "%s_%d" % (base, i)
             i += 1
         used.add(name)
-        gs = set(g)
-        ws = [w["id"] for w in wires if "id" in w and tuple(w["a"]) in gs]
-        out.append({"name": name, "pins": g, "wires": ws})
+        out.append({"name": name, "pins": g, "wires": wires_of[gi]})
     return out
 
 
@@ -2495,7 +2817,13 @@ class LogicProgram:
 
         for n in self.comb:
             visit(n)
-        comp = lambda e: compile(_code(e, idx), "<logic>", "eval")
+        # each equation becomes a small Python function of the signal list s (built from the parsed
+        # equation, never from the raw text, so only s[..], 0, 1 and & | ^ - can appear in it)
+        def comp(e):
+            try:
+                return eval("lambda s: %s" % _code(e, idx), {"__builtins__": {}})
+            except (SyntaxError, RecursionError, MemoryError):
+                raise LogicError("an equation is too deeply nested (use fewer brackets)")
         self.comb_code = [(idx[n], comp(self.comb[n][0])) for n in order]
         self.when_code = {n: [(comp(e), comp(c)) for e, c, _l in lst] for n, lst in self.when.items()}
         self.clock_code = {n: (comp(e), idx[c], g) for n, (e, (c, g), _l) in self.clocked.items()}
@@ -2510,8 +2838,8 @@ class LogicProgram:
         return set().union(*(LogicProgram._names_in(x) for x in e[1:]))
 
     @staticmethod
-    def _ev(code, s):
-        return eval(code, {"__builtins__": {}}, {"s": s}) & 1
+    def _ev(fn, s):
+        return fn(s) & 1
 
     def settle(self, s):
         for i, code in self.comb_code:
@@ -3638,7 +3966,7 @@ class App:
     def __init__(self, root, open_path=None):
         self.root = root
         self.settings_path = os.path.join(data_dir(), "settings.json")
-        self.settings = load_json(self.settings_path, {})
+        self.settings = clean_settings(load_json(self.settings_path, {}))
         self.library = Library()
         self.comps = {}
         self.wires = {}
@@ -3671,9 +3999,12 @@ class App:
         self.space_down = False
         self._redraw_pending = False
         self._nets_cache = None
+        self._pin_net = None
+        self._error_shown = 0.0
         self._lib_drag = None
         self._flash_job = None
         self._missing = {}
+        self.load_notes = []
         # simulation
         self.sim = None
         self.sim_paused = False
@@ -3704,10 +4035,27 @@ class App:
         root.bind_class("Toplevel", "<Map>", lambda e: set_title_bar_theme(e.widget, THEME["dark"]), add="+")
         root.after(50, lambda: set_title_bar_theme(root, THEME["dark"]))
         root.protocol("WM_DELETE_WINDOW", self.on_close)
+        root.report_callback_exception = self._on_tk_error
         self.update_title()
         self.refresh_props()
+        if self.library.problem:
+            root.after(300, lambda: messagebox.showwarning(APP_NAME, self.library.problem))
         if open_path:
             root.after(100, lambda: self.open_file(open_path))
+
+    def _on_tk_error(self, exc_type, exc, tb):
+        """An error in a button, menu or mouse handler: log it and tell the student, instead of the
+        click silently doing nothing (the windowed app has no console to print to)."""
+        path = log_exception(exc_type, exc, tb, "in the editor")
+        now = time.time()
+        if now - self._error_shown < 5.0:   # one message per burst (e.g. an error on every redraw)
+            return
+        self._error_shown = now
+        try:
+            self.flash("Something went wrong (%s). Details were saved to %s — please send that file "
+                       "to your instructor." % (exc_type.__name__, path), 12000)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ setup
     def _setup_fonts(self):
@@ -4180,7 +4528,7 @@ class App:
                 for w in self.wires.values():
                     for end in (w["a"], w["b"]):
                         if self.comps.get(end[0], {}).get("def") == did:
-                            n = max(n, end[1] + 1)
+                            n = max(n, min(end[1] + 1, MAX_PINS))
                 self._missing[did] = RDef({"id": did, "name": "Missing part", "prefix": "X",
                                            "symbol": "box", "w": 4, "h": n + 1, "color": "#fde2e4",
                                            "pins": [{"name": str(i + 1), "side": "left", "pos": i + 1}
@@ -4297,8 +4645,20 @@ class App:
     def _restore(self, snap):
         d = json.loads(snap)
         self.comps, self.wires = d["comps"], d["wires"]
+        # a part type may have been edited since this snapshot: drop wires on pins it no longer has
+        for wid in [wid for wid, w in self.wires.items() if not self._wire_ok(w)]:
+            del self.wires[wid]
         self.sel = {k for k in self.sel if (k[0] == "c" and k[1] in self.comps) or (k[0] == "w" and k[1] in self.wires)}
+        self.highlight = None
         self.changed()
+
+    def _wire_ok(self, w):
+        """Both ends are on a part in the circuit, on a pin that part has."""
+        for end in (w.get("a"), w.get("b")):
+            c = self.comps.get(end[0]) if end else None
+            if c is None or not 0 <= end[1] < len(self.rdef(c).pins):
+                return False
+        return True
 
     def undo(self):
         self.commit_props()
@@ -4383,13 +4743,17 @@ class App:
                 cv.create_line(*cp, fill=C["sel_wire"], width=lw * 3.2, capstyle="round", joinstyle="round")
             cv.create_line(*cp, fill=ink(w.get("color") or WIRE_COLORS[0][1]), width=lw, capstyle="round",
                            joinstyle="round", tags=("wire", "w:" + wid))
+        broken = None
         for cid, c in self.comps.items():
-            render_component(cv, self.rdef(c), c, self.T, z, self.fam,
-                             state="selected" if ("c", cid) in self.sel else "normal",
-                             connected=connected, cid=cid, show_pin_labels=z >= 0.55,
-                             closed=self.is_closed(cid, c))
+            try:
+                render_component(cv, self.rdef(c), c, self.T, z, self.fam,
+                                 state="selected" if ("c", cid) in self.sel else "normal",
+                                 connected=connected, cid=cid, show_pin_labels=z >= 0.55,
+                                 closed=self.is_closed(cid, c))
+            except Exception:
+                broken = broken or sys.exc_info()   # draw the rest; report the first problem below
         for key in hl.get("pins", []):
-            if key[0] in self.comps:
+            if key[0] in self.comps and key[1] < len(self.rdef(self.comps[key[0]]).pins):
                 x, y = self.T(*self.pin_world(key))
                 r = 7 * z
                 cv.create_oval(x - r, y - r, x + r, y + r, outline=C["net_pin"], width=2)
@@ -4402,6 +4766,8 @@ class App:
         self._sim_draw()
         self.draw_overlay()
         self.update_counts()
+        if broken:
+            raise broken[1].with_traceback(broken[2])
 
     def is_closed(self, cid, c):
         """Draw this switch closed / push button pressed?"""
@@ -4517,11 +4883,11 @@ class App:
         return self._nets_cache
 
     def pin_net_map(self):
-        m = {}
-        for net in self.compute_nets():
-            for k in net["pins"]:
-                m[k] = net
-        return m
+        """(part id, pin number) -> net.  Cached with the nets (it is used on every mouse move)."""
+        nets = self.compute_nets()
+        if self._pin_net is None or self._pin_net[0] is not nets:
+            self._pin_net = (nets, {k: net for net in nets for k in net["pins"]})
+        return self._pin_net[1]
 
     def set_highlight(self, net):
         self.highlight = net
@@ -5752,20 +6118,31 @@ class App:
         self.changed()
         return dropped
 
+    def _store_definition(self, d, persist=True):
+        """Put d in the library.  If it replaces a part type with different pins, wires on the
+        same-named pins are kept, both on the canvas and inside components built from a circuit
+        that contain this part.  Returns how many wires had to be removed."""
+        custom = self.library.custom.get(d["id"])
+        old = self.library.resolve(d["id"]) if custom else None
+        old_names = [p["name"] for p in old.pins] if old else None
+        users = {cid for cid, c in self.comps.items() if c["def"] == d["id"]}
+        if old_names is not None and users:
+            self.checkpoint()
+        self.library.save_def(d, persist=persist)
+        if old_names is None:
+            return 0
+        mapping = self._pin_mapping(old_names, self.library.resolve(d["id"]).pins)
+        dropped = self.library.remap_nested(d["id"], mapping)
+        if users:
+            dropped += self._remap_wires(users, mapping)
+            self.changed()
+        return dropped
+
     def save_definition(self, d, use_for=None):
         """Called by the editor. Adds/updates a custom definition and remaps existing wires.
         use_for: a placed part that should switch to this definition."""
         self.commit_props()
-        old = self.library.resolve(d["id"]) if self.library.get(d["id"]) else None
-        old_names = [p["name"] for p in old.pins] if old else None
-        self.library.save_def(d)
-        new = self.library.resolve(d["id"])
-        dropped = 0
-        users = [cid for cid, c in self.comps.items() if c["def"] == d["id"]]
-        if old_names is not None and users:
-            self.checkpoint()
-            dropped = self._remap_wires(set(users), self._pin_mapping(old_names, new.pins))
-            self.changed()
+        dropped = self._store_definition(d)
         switched = None
         if use_for in self.comps and self.comps[use_for]["def"] != d["id"]:
             dropped += self._switch_type(use_for, d["id"])
@@ -6063,6 +6440,10 @@ class App:
                 nw.setdefault("color", self.wire_color)
                 self.wires[nid] = nw
                 newsel.add(("w", nid))
+        for wid in [k[1] for k in newsel if k[0] == "w"]:
+            if not self._wire_ok(self.wires[wid]):   # an inner part type changed since it was saved
+                del self.wires[wid]
+                newsel.discard(("w", wid))
         dropped = 0
         pins = d.get("pins", [])
         for wid in list(self.wires):
@@ -6144,19 +6525,29 @@ class App:
             messagebox.showerror(APP_NAME, "That file could not be read.")
             return
         defs = data.get("components") if data.get("format") == "circuit-builder-library" else data.get("definitions", [])
-        n = 0
-        for d in defs or []:
-            if not isinstance(d, dict) or not d.get("pins"):
+        n = skipped = dropped = 0
+        for d in _as_list(defs):
+            if isinstance(d, dict) and not d.get("id"):
+                d = dict(d, id="custom_" + uuid.uuid4().hex[:10])
+            d = clean_def(copy.deepcopy(d))
+            if d is None or not d["pins"] or d["id"] in self.library.builtin:
+                skipped += 1
                 continue
-            d = copy.deepcopy(d)
-            if not d.get("id"):
-                d["id"] = "custom_" + uuid.uuid4().hex[:10]
-            if d["id"] in self.library.builtin:
-                continue
-            self.library.save_def(d)
+            dropped += self._store_definition(d, persist=False)
             n += 1
+        if n:
+            self.library.persist()
         self.populate_library()
-        messagebox.showinfo(APP_NAME, "Imported %d component%s." % (n, "" if n == 1 else "s"))
+        if self.sim is not None:
+            self._sim_rebuild()
+        msg = "Imported %d component%s." % (n, "" if n == 1 else "s")
+        if skipped:
+            msg += "\n\n%d entr%s in the file could not be used." % (skipped, "y" if skipped == 1 else "ies")
+        if dropped:
+            msg += ("\n\nSome imported parts have different pins from your old copies: %d wire%s on pins that "
+                    "no longer exist %s removed." % (dropped, "" if dropped == 1 else "s",
+                                                      "was" if dropped == 1 else "were"))
+        messagebox.showinfo(APP_NAME, msg)
 
     def export_library(self):
         if not self.library.custom:
@@ -6167,8 +6558,12 @@ class App:
                                             filetypes=[("Component library", "*" + LIB_EXT)])
         if not path:
             return
-        save_json(path, {"format": "circuit-builder-library", "version": 1,
-                         "components": list(self.library.custom.values())})
+        try:
+            save_json(path, {"format": "circuit-builder-library", "version": 1,
+                             "components": list(self.library.custom.values())})
+        except OSError as e:
+            messagebox.showerror(APP_NAME, "Could not export:\n%s" % e)
+            return
         self.flash("Exported %d components to %s" % (len(self.library.custom), os.path.basename(path)))
 
     # ------------------------------------------------------------ files
@@ -6181,25 +6576,86 @@ class App:
                 "view": {"zoom": self.zoom / self.ui_scale, "panx": self.panx, "pany": self.pany}}
 
     def load_data(self, data):
-        if data.get("format") != "circuit-builder":
+        """Replace the circuit with the one in `data` (a parsed .circuit file).  Everything is checked
+        first, so a damaged file leaves the current circuit as it was.  Returns the number of custom
+        parts added to the library; problems found are left in self.load_notes."""
+        if not isinstance(data, dict) or data.get("format") != "circuit-builder":
             raise ValueError("This is not a Circuit Builder file.")
+        notes = []
+        defs = [cd for cd in (clean_def(copy.deepcopy(d)) for d in _as_list(data.get("definitions"))) if cd]
+        comps, bad_parts = {}, 0
+        for c in _as_list(data.get("components")):
+            cc = clean_comp(c)
+            if cc is None or cc["id"] in comps:
+                bad_parts += 1
+            else:
+                comps[cc["id"]] = cc
+        if bad_parts:
+            notes.append("%d damaged part%s skipped" % (bad_parts, " was" if bad_parts == 1 else "s were"))
+        if not comps and _as_list(data.get("components")):
+            raise ValueError("None of the parts in this file could be read.")
+
+        # ---- nothing below can fail on bad data
         self.sim_stop()
         self.scope_traces = []
         if self.scope_win is not None:
             self.scope_win.build_legend()
         added = 0
-        for d in data.get("definitions", []):
-            if d.get("id") and not self.library.get(d["id"]):
-                self.library.save_def(copy.deepcopy(d))
+        remap = {}   # part type -> {pin number in the file: pin number now}
+        for d in defs:
+            if d["id"] in self.library.builtin:
+                continue
+            have = self.library.resolve(d["id"]) if d["id"] in self.library.custom else None
+            if have is None:
+                self.library.save_def(d, persist=False)
                 added += 1
-        self.comps = {c["id"]: c for c in data.get("components", [])}
-        self.wires = {}
-        for w in data.get("wires", []):
-            if w["a"][0] in self.comps and w["b"][0] in self.comps:
-                w.setdefault("bends", [])
-                self.wires[w["id"]] = w
+            else:
+                # The library already has this part, maybe changed since the file was saved
+                # (pins added, removed or reordered): keep the file's wires on same-named pins.
+                file_names = [p["name"] for p in d["pins"]]
+                if file_names != [p["name"] for p in have.pins]:
+                    remap[d["id"]] = self._pin_mapping(file_names, have.pins)
+        if added:
+            self.library.persist()
+
+        def pin_count(cid):
+            c = comps.get(cid)
+            if c is None:
+                return None
+            rd = self.library.resolve(c["def"])
+            return len(rd.pins) if rd else MAX_PINS   # part type missing: drawn as a placeholder
+
+        wires, bad_wires = {}, 0
+        for w in _as_list(data.get("wires")):
+            if isinstance(w, dict) and remap:
+                w = dict(w)
+                for end in ("a", "b"):
+                    e = w.get(end)
+                    if isinstance(e, (list, tuple)) and len(e) == 2 and e[0] in comps:
+                        m = remap.get(comps[e[0]]["def"])
+                        if m is not None:
+                            k = m.get(_pin_index(e[1]))
+                            w[end] = [e[0], -1 if k is None else k]
+            cw = clean_wire(w, pin_count)
+            if cw is None:
+                bad_wires += 1
+                continue
+            if cw.get("id") is None or cw["id"] in wires:
+                cw["id"] = new_id()
+            wires[cw["id"]] = cw
+        if bad_wires:
+            notes.append("%d wire%s pointed at a pin that doesn’t exist and %s removed"
+                         % (bad_wires, "" if bad_wires == 1 else "s", "was" if bad_wires == 1 else "were"))
+        if remap:
+            names = ", ".join("“%s”" % self.library.get(did).get("name", "?") for did in remap)
+            notes.append("your library’s version of %s has different pins from the one in this file, so its "
+                         "wires were moved to the pins with the same names" % names)
+        self.load_notes = notes
+        self.comps = comps
+        self.wires = wires
         self._missing = {}
         self.sel = set()
+        self.highlight = None
         self.undo_stack.clear()
         self.redo_stack.clear()
         self._nets_cache = None
@@ -6251,7 +6707,7 @@ class App:
             return
         try:
             added = self.load_data(data)
-        except (ValueError, KeyError, TypeError, IndexError) as e:
+        except (ValueError, KeyError, TypeError, IndexError, AttributeError) as e:
             messagebox.showerror(APP_NAME, "Could not open the file:\n%s" % e)
             return
         self.path = path
@@ -6261,6 +6717,10 @@ class App:
         self.update_title()
         self.add_recent(path)
         self.root.after(30, self.fit)
+        if self.load_notes:
+            messagebox.showwarning(APP_NAME, "The circuit was opened, but:\n\n• " + "\n• ".join(
+                n[0].upper() + n[1:] + "." for n in self.load_notes)
+                + "\n\nCheck the circuit, then save it to keep the repaired version.")
         if added:
             self.flash("Added %d custom component%s from this file to your library." % (added, "" if added == 1 else "s"), 6000)
 
@@ -8419,7 +8879,7 @@ class Sim:
         except SimError as e:
             self.error = str(e)
         except Exception as e:  # never let a simulator bug take the editor down
-            traceback.print_exc()
+            log_exception(*sys.exc_info(), context="building the simulation")
             self.error = "The simulator hit an internal problem (%s)." % e
         if self.error and (self.N == 0 or len(self.x) != self.N):
             self.devs, self.by_cid, self.nl, self.reactive = [], {}, [], []
@@ -8763,7 +9223,7 @@ class Sim:
         except SimError as e:
             self.error = str(e)
         except Exception as e:
-            traceback.print_exc()
+            log_exception(*sys.exc_info(), context="running the simulation")
             self.error = "The simulator hit an internal problem (%s)." % e
 
     def bump(self):
@@ -9241,7 +9701,9 @@ def _app_show_about(self):
     messagebox.showinfo("About " + APP_NAME,
                         "%s %s\n\nA simple circuit and wiring editor for students, with a built-in "
                         "circuit simulator.\n\n"
-                        "Your custom components are stored in:\n%s" % (APP_NAME, APP_VERSION, self.library.path))
+                        "Your custom components are stored in:\n%s\n\n"
+                        "If something goes wrong, the details are saved in:\n%s"
+                        % (APP_NAME, APP_VERSION, self.library.path, error_log_path()))
 
 
 App.show_help = _app_show_help
@@ -9482,24 +9944,37 @@ class _SimUI:
         sim = self.sim
         if sim is None:
             return
-        now = time.perf_counter()
-        dt = min(0.1, max(0.0, now - self._sim_last))
-        self._sim_last = now
-        if not self.sim_paused:
-            sim.advance(dt * self.sim_timescale(), budget=0.025)
-        elif sim.static and sim.dirty:
-            sim.advance(0.0)
-        self._sim_draw()
-        if self.sim_hover is not None or self.hover_pin is not None:
-            self.draw_overlay()
-        self._sim_ui_t += dt
-        if self._sim_ui_t >= 0.2:
-            self._sim_ui_t = 0.0
-            self._sim_status()
-            self._sim_update_props()
-        if self.scope_win is not None:
-            self.scope_win.redraw()
-        self._sim_job = self.root.after(30, self._sim_tick)
+        try:
+            now = time.perf_counter()
+            dt = min(0.1, max(0.0, now - self._sim_last))
+            self._sim_last = now
+            if not self.sim_paused:
+                sim.advance(dt * self.sim_timescale(), budget=0.025)
+            elif sim.static and sim.dirty:
+                sim.advance(0.0)
+            self._sim_draw()
+            if self.sim_hover is not None or self.hover_pin is not None:
+                self.draw_overlay()
+            self._sim_ui_t += dt
+            if self._sim_ui_t >= 0.2:
+                self._sim_ui_t = 0.0
+                self._sim_status()
+                self._sim_update_props()
+            if self.scope_win is not None:
+                self.scope_win.redraw()
+        except Exception:
+            # Without this, one error stops the loop for good and the simulation looks frozen.
+            # Show it as a simulator problem instead (editing the circuit or Restart starts afresh).
+            if self.sim is sim and not sim.error:
+                path = log_exception(*sys.exc_info(), context="in the simulation loop")
+                sim.error = "The simulator hit an internal problem (details saved to %s)." % path
+                try:
+                    self._sim_status()
+                except Exception:
+                    pass
+        finally:
+            if self.sim is not None and self._sim_job is None:
+                self._sim_job = self.root.after(30, self._sim_tick)
 
     def _sim_status(self):
         sim = self.sim
@@ -10609,7 +11084,17 @@ def main():
     root.geometry("%dx%d+%d+%d" % (w, h, max(0, (sw - w) // 2), max(0, (sh - h) // 3)))
     root.minsize(int(960 * sc), int(600 * sc))
     open_path = sys.argv[1] if len(sys.argv) > 1 and os.path.exists(sys.argv[1]) else None
-    App(root, open_path)
+    try:
+        App(root, open_path)
+    except Exception:
+        # The windowed app has no console, so say what happened instead of just not opening.
+        path = log_exception(*sys.exc_info(), context="starting up")
+        try:
+            messagebox.showerror(APP_NAME, "Circuit Builder couldn’t start.\n\nThe details were saved to:\n%s\n\n"
+                                           "Please send that file to your instructor." % path)
+        finally:
+            root.destroy()
+        raise SystemExit(1)
     root.mainloop()
 
 
