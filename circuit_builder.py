@@ -28,6 +28,7 @@ import time
 import traceback
 import uuid
 import base64
+import colorsys
 import hashlib
 import io
 import shutil
@@ -57,37 +58,125 @@ LIB_EXT = ".cblib"
 G = 24  # pixels per grid unit at 100 % zoom
 
 # --------------------------------------------------------------------------
-# Look & feel
+# Look & feel (light and dark themes)
 # --------------------------------------------------------------------------
-C = {
-    "bg": "#eef1f5",
-    "panel": "#ffffff",
-    "border": "#d6dce4",
-    "text": "#1f2933",
-    "muted": "#6b7785",
-    "accent": "#2563eb",
-    "accent_dark": "#1d4ed8",
-    "accent_light": "#e3ecff",
-    "canvas": "#fbfcfd",
-    "grid": "#eef1f5",
-    "grid_major": "#e0e5ec",
-    "stroke": "#26323f",
-    "pin_on": "#26323f",
-    "pin_off": "#8d99a6",
-    "pinlabel": "#3e4a57",
-    "danger": "#dc2626",
-    "select": "#2563eb",
-    "sel_fill": "#eaf1ff",
-    "hover": "#f59e0b",
-    "highlight": "#fde68a",
-    "ok": "#16a34a",
-    "ok_dark": "#15803d",
-    "warn": "#b45309",
-    "sim_bg": "#ecfdf3",
-    "sim_border": "#b7e4c7",
-    "meter_bg": "#0f172a",
-    "meter_fg": "#a7f3d0",
+# Every color the app draws with lives in these two palettes.  C is the live palette:
+# set_palette() copies one of them into it, so code just reads C["..."] when drawing.
+LIGHT_C = {
+    # windows and panels
+    "bg": "#eef1f5", "panel": "#ffffff", "border": "#d6dce4", "text": "#1f2933", "muted": "#6b7785",
+    "field": "#ffffff",                       # text boxes, entries
+    "accent": "#2563eb",                      # lines and highlights in the accent color
+    "accent_dark": "#1d4ed8",                 # accent-colored text (custom parts, step numbers)
+    "accent_light": "#e3ecff",                # soft accent background (selection, pressed)
+    "accent_btn": "#2563eb", "accent_btn_press": "#1d4ed8", "accent_btn_off": "#dfe7f7",
+    "on_btn": "#ffffff",                      # text on the colored buttons
+    "button": "#f6f8fa", "button_hover": "#edf2fa", "tool_hover": "#eef2f8", "disabled": "#a0a8b2",
+    "trough": "#e6eaf0", "thumb": "#e6eaf0", "heading": "#f3f5f8", "arrow": "#000000",
+    "clam_frame": "#dcdad5", "clam_active": "#eeebe7", "clam_disabled": "#999999",
+    "chk_hi": "#9e9a91", "chk_lo": "#cfcdc8",
+    "tip_bg": "#1f2933", "tip_fg": "#ffffff",
+    # circuit canvas
+    "canvas": "#fbfcfd", "grid": "#eef1f5", "grid_major": "#e0e5ec",
+    "stroke": "#26323f", "sym_fill": "#ffffff", "pin_on": "#26323f", "pin_off": "#8d99a6",
+    "pin_free": "#ffffff", "pinlabel": "#3e4a57",
+    "select": "#2563eb", "sel_fill": "#eaf1ff", "sel_wire": "#bfd3ff", "handle": "#ffffff",
+    "hover": "#f59e0b", "highlight": "#fde68a", "net_pin": "#d97706",
+    # status colors
+    "danger": "#dc2626", "danger_btn": "#dc2626", "danger_btn_press": "#b91c1c",
+    "ok": "#16a34a", "ok_btn": "#16a34a", "ok_btn_press": "#15803d", "warn": "#b45309",
+    # simulation
+    "sim_bg": "#ecfdf3", "sim_border": "#b7e4c7", "sim_btn": "#ffffff", "sim_btn_hover": "#f3faf6",
+    "meter_bg": "#0f172a", "meter_fg": "#a7f3d0",
+    "volt_pos": "#b91c1c", "volt_neg": "#1d4ed8", "volt_bg": "#ffffff",
+    # oscilloscope and Bode plot
+    "plot_bg": "#ffffff", "plot_grid": "#eef1f5", "plot_zero": "#d6dce4",
+    "bode_grid": "#e6eaf0", "bode_minor": "#f3f5f8", "marker": "#ea580c",
 }
+
+DARK_C = {
+    "bg": "#161a21", "panel": "#1e232c", "border": "#323a47", "text": "#e5e9ef", "muted": "#98a3b3",
+    "field": "#14181e",
+    "accent": "#5b9bff",
+    "accent_dark": "#93b8ff",
+    "accent_light": "#203558",
+    "accent_btn": "#2563eb", "accent_btn_press": "#1d4ed8", "accent_btn_off": "#7f9bd0",
+    "on_btn": "#ffffff",
+    "button": "#272e39", "button_hover": "#313a47", "tool_hover": "#2a323e", "disabled": "#5f6977",
+    "trough": "#20262f", "thumb": "#3a4452", "heading": "#252c36", "arrow": "#c9d1dc",
+    "clam_frame": "#272e39", "clam_active": "#313a47", "clam_disabled": "#5f6977",
+    "chk_hi": "#5f6977", "chk_lo": "#3a4452",
+    "tip_bg": "#323b49", "tip_fg": "#f3f5f8",
+    "canvas": "#12161c", "grid": "#1b2028", "grid_major": "#262d37",
+    "stroke": "#d4dae2", "sym_fill": "#12161c", "pin_on": "#d4dae2", "pin_off": "#6f7b8b",
+    "pin_free": "#12161c", "pinlabel": "#a9b4c2",
+    "select": "#5b9bff", "sel_fill": "#172540", "sel_wire": "#28467a", "handle": "#e5e9ef",
+    "hover": "#fbbf24", "highlight": "#5c4813", "net_pin": "#f59e0b",
+    "danger": "#f87171", "danger_btn": "#dc2626", "danger_btn_press": "#b91c1c",
+    "ok": "#4ade80", "ok_btn": "#16a34a", "ok_btn_press": "#15803d", "warn": "#fbbf24",
+    "sim_bg": "#10241a", "sim_border": "#24553b", "sim_btn": "#1a3326", "sim_btn_hover": "#22412f",
+    "meter_bg": "#05080c", "meter_fg": "#a7f3d0",
+    "volt_pos": "#fca5a5", "volt_neg": "#93c5fd", "volt_bg": "#12161c",
+    "plot_bg": "#12161c", "plot_grid": "#1f252e", "plot_zero": "#3c4655",
+    "bode_grid": "#29313c", "bode_minor": "#1b2028", "marker": "#fb923c",
+}
+
+C = dict(LIGHT_C)
+THEME = {"dark": False}
+
+# Drawing colors chosen by the user (wires, scope traces …) are stored as they are and only
+# shown brighter in dark mode, so files and exported images look the same in both themes.
+DARK_INK = {
+    "#2563eb": "#60a5fa", "#dc2626": "#f87171", "#1f2933": "#cbd5e1", "#16a34a": "#4ade80",
+    "#ea580c": "#fb923c", "#d4a106": "#facc15", "#7c3aed": "#a78bfa", "#92400e": "#d08a52",
+    "#0d9488": "#2dd4bf", "#6b7280": "#9ca3af", "#d97706": "#fbbf24", "#0891b2": "#22d3ee",
+    "#db2777": "#f472b6", "#4b5563": "#d1d5db", "#111827": "#e5e7eb",
+}
+
+
+def set_palette(dark):
+    """Make the light or dark palette the live one (C)."""
+    THEME["dark"] = bool(dark)
+    C.clear()
+    C.update(DARK_C if dark else LIGHT_C)
+
+
+def _rgb(col):
+    col = col.strip()
+    if len(col) == 4 and col.startswith("#"):
+        col = "#" + "".join(ch * 2 for ch in col[1:])
+    if len(col) != 7 or not col.startswith("#"):
+        raise ValueError(col)
+    return [int(col[i:i + 2], 16) for i in (1, 3, 5)]
+
+
+def ink(col):
+    """Display color for a stored drawing color (wire, trace) in the current theme."""
+    if not THEME["dark"] or not col:
+        return col
+    k = col.lower()
+    if k in DARK_INK:
+        return DARK_INK[k]
+    try:
+        r, g, b = _rgb(k)
+    except ValueError:
+        return col
+    if 0.2126 * r + 0.7152 * g + 0.0722 * b < 115:   # too dark to see on the dark canvas
+        return _mix("#%02x%02x%02x" % (r, g, b), "#ffffff", 0.5)
+    return col
+
+
+def body_fill(col):
+    """Display fill for a part's body color: dark mode keeps the hue but darkens it."""
+    if not THEME["dark"] or not col:
+        return col
+    try:
+        r, g, b = _rgb(col)
+    except ValueError:
+        return col
+    h, lum, s = colorsys.rgb_to_hls(r / 255.0, g / 255.0, b / 255.0)
+    r, g, b = colorsys.hls_to_rgb(h, min(lum, 0.23), min(s, 0.42))
+    return "#%02x%02x%02x" % (int(round(r * 255)), int(round(g * 255)), int(round(b * 255)))
 
 WIRE_COLORS = [
     ("Blue", "#2563eb"), ("Red", "#dc2626"), ("Black", "#1f2933"),
@@ -829,9 +918,9 @@ def render_component(cv, rd, comp, T, z, fam, state="normal", connected=frozense
         if f == "stroke":
             return stroke
         if f == "body":
-            return C["accent_light"] if state == "ghost" else rd.color
+            return C["accent_light"] if state == "ghost" else body_fill(rd.color)
         if f == "white":
-            return "white"
+            return C["sym_fill"]
         return f or ""
 
     prims = rd.alt_prims if (closed and rd.alt_prims) else rd.prims
@@ -914,7 +1003,7 @@ def render_component(cv, rd, comp, T, z, fam, state="normal", connected=frozense
             x, y = tp((p["x"], p["y"]))
             on = (cid, i) in connected
             cv.create_oval(x - r, y - r, x + r, y + r,
-                           fill=C["pin_on"] if on else "white",
+                           fill=C["pin_on"] if on else C["pin_free"],
                            outline=C["pin_on"] if on else C["pin_off"],
                            width=max(1.0, 1.2 * z), tags=tags + ("pin",))
 
@@ -1587,7 +1676,7 @@ class Tooltip:
         self.tip = tk.Toplevel(self.widget)
         self.tip.wm_overrideredirect(True)
         self.tip.wm_geometry("+%d+%d" % (x, y))
-        tk.Label(self.tip, text=self.text, bg="#1f2933", fg="white", padx=8, pady=4,
+        tk.Label(self.tip, text=self.text, bg=C["tip_bg"], fg=C["tip_fg"], padx=8, pady=4,
                  font=("Segoe UI", 9)).pack()
 
     def _leave(self, _e=None):
@@ -1597,6 +1686,158 @@ class Tooltip:
         if self.tip:
             self.tip.destroy()
             self.tip = None
+
+
+# ---- switching themes while windows are open
+_MENU_DEFAULTS = {}   # the platform's own menu colors, used in light mode
+_MENU_OPTS = ("-background", "-foreground", "-activebackground", "-activeforeground",
+              "-disabledforeground", "-selectcolor")
+_RETHEME_OPTS = ("-background", "-foreground", "-highlightbackground", "-highlightcolor",
+                 "-insertbackground", "-activebackground", "-activeforeground", "-disabledforeground",
+                 "-troughcolor")
+# palette keys that classic widgets use, checked first when two keys share a color
+_RETHEME_FIRST = ("bg", "panel", "field", "text", "muted", "border", "canvas", "accent", "accent_dark",
+                  "accent_light", "ok", "danger", "warn", "sim_bg", "sim_border", "plot_bg", "tip_bg", "tip_fg")
+
+
+def remember_menu_defaults(root):
+    if _MENU_DEFAULTS:
+        return
+    m = tk.Menu(root)
+    for opt in _MENU_OPTS:
+        try:
+            _MENU_DEFAULTS[opt] = str(m.cget(opt[1:]))
+        except tk.TclError:
+            pass
+    m.destroy()
+
+
+def menu_colors():
+    if not THEME["dark"]:
+        return dict(_MENU_DEFAULTS)
+    return {"-background": C["panel"], "-foreground": C["text"], "-activebackground": C["accent_light"],
+            "-activeforeground": C["text"], "-disabledforeground": C["disabled"], "-selectcolor": C["text"]}
+
+
+def apply_option_db(root):
+    """Default colors for widgets created from now on (menus, text boxes, drop-down lists)."""
+    mc = menu_colors()
+    for opt, res in (("-background", "background"), ("-foreground", "foreground"),
+                     ("-activebackground", "activeBackground"), ("-activeforeground", "activeForeground"),
+                     ("-disabledforeground", "disabledForeground"), ("-selectcolor", "selectColor")):
+        if opt in mc:
+            root.option_add("*Menu." + res, mc[opt])
+    for pat in ("*TCombobox*Listbox", "*Listbox"):
+        root.option_add(pat + ".background", C["field"])
+        root.option_add(pat + ".foreground", C["text"])
+        root.option_add(pat + ".selectBackground", C["accent_btn"])
+        root.option_add(pat + ".selectForeground", C["on_btn"])
+    root.option_add("*Text.background", C["field"])
+    root.option_add("*Text.foreground", C["text"])
+    root.option_add("*Text.insertBackground", C["text"])
+    root.option_add("*Toplevel.background", C["bg"])
+
+
+def text_colors():
+    """Colors for a tk.Text box."""
+    return {"bg": C["field"], "fg": C["text"], "insertbackground": C["text"],
+            "selectbackground": C["accent_light"], "selectforeground": C["text"],
+            "highlightbackground": C["border"], "highlightcolor": C["accent"]}
+
+
+def retheme_widgets(root, old, new):
+    """Recolor the classic Tk widgets in every open window from the old palette to the new one.
+    (ttk widgets follow their styles; canvases are redrawn by their owners.)"""
+    tkapp = root.tk
+    cmap = {}
+    for k in _RETHEME_FIRST + tuple(old):
+        if k in old and k in new and k != "arrow":   # "arrow" is Tk's default black: leave it alone
+            cmap.setdefault(str(old[k]).lower(), new[k])
+    cmap.setdefault("white", new["panel"])
+    menu = [x for kv in menu_colors().items() for x in kv]
+
+    def opt_names(path):
+        try:
+            return {str(tkapp.splitlist(item)[0]) for item in tkapp.splitlist(tkapp.call(path, "configure"))}
+        except (tk.TclError, IndexError):
+            return set()
+
+    def remap(path, names):
+        for opt in _RETHEME_OPTS:
+            if opt not in names:
+                continue
+            try:
+                v = str(tkapp.call(path, "cget", opt)).lower()
+            except tk.TclError:
+                continue
+            nv = cmap.get(v)
+            if nv and nv.lower() != v:
+                try:
+                    tkapp.call(path, "configure", opt, nv)
+                except tk.TclError:
+                    pass
+
+    def walk(path):
+        try:
+            cls = str(tkapp.call("winfo", "class", path))
+        except tk.TclError:
+            return
+        try:
+            if cls == "Menu":
+                if menu:
+                    tkapp.call(path, "configure", *menu)
+            elif cls == "Text":
+                tc = text_colors()
+                tkapp.call(path, "configure", *[x for k, v in tc.items() for x in ("-" + k, v)])
+            elif cls == "Listbox":
+                tkapp.call(path, "configure", "-background", C["field"], "-foreground", C["text"],
+                           "-selectbackground", C["accent_btn"], "-selectforeground", C["on_btn"])
+            else:
+                remap(path, opt_names(path))
+                if cls == "Treeview":
+                    try:
+                        tags = tkapp.splitlist(tkapp.call(path, "tag", "names"))
+                    except tk.TclError:
+                        tags = ("cat", "custom", "gap", "Error", "Warning", "Info")
+                    for t in tags:
+                        for opt in ("-foreground", "-background"):
+                            try:
+                                v = str(tkapp.call(path, "tag", "configure", t, opt)).lower()
+                            except tk.TclError:
+                                continue
+                            if v in cmap:
+                                tkapp.call(path, "tag", "configure", t, opt, cmap[v])
+        except tk.TclError:
+            pass
+        try:
+            kids = tkapp.splitlist(tkapp.call("winfo", "children", path))
+        except tk.TclError:
+            kids = ()
+        for k in kids:
+            walk(str(k))
+
+    walk(".")
+
+
+def set_title_bar_theme(win, dark):
+    """Windows 10/11: give the window a dark (or light) title bar to match the app."""
+    if os.name != "nt":
+        return
+    try:
+        if win.wm_overrideredirect():
+            return
+        import ctypes
+        hwnd = ctypes.windll.user32.GetParent(win.winfo_id())
+        if not hwnd:
+            return
+        val = ctypes.c_int(1 if dark else 0)
+        for attr in (20, 19):   # DWMWA_USE_IMMERSIVE_DARK_MODE (19 on early Windows 10 builds)
+            if ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(val), ctypes.sizeof(val)) == 0:
+                break
+        # NOSIZE | NOMOVE | NOZORDER | NOACTIVATE | FRAMECHANGED: repaint the frame now
+        ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x37)
+    except Exception:
+        pass
 
 
 def fit_preview(cv, rd, fam, label=None, value=None, max_zoom=1.4):
@@ -1788,8 +2029,7 @@ class ComponentEditor(tk.Toplevel):
         field("Default value", ttk.Entry(left, textvariable=self.v_value),
               "Optional, e.g. 5 V, 10 kΩ, ATmega328P")
         self.t_desc = tk.Text(left, height=3, width=30, wrap="word", font=(fam, 9), relief="flat",
-                              highlightthickness=1, highlightbackground=C["border"],
-                              highlightcolor=C["accent"], padx=6, pady=4)
+                              highlightthickness=1, padx=6, pady=4, **text_colors())
         self.t_desc.insert("1.0", d.get("description", ""))
         self.t_desc.bind("<KeyRelease>", lambda e: None)
         field("Description", self.t_desc)
@@ -1801,7 +2041,7 @@ class ComponentEditor(tk.Toplevel):
         r += 1
         self.swatches = []
         for i, col in enumerate(BODY_COLORS):
-            f = tk.Frame(sw, width=22, height=22, bg=col, highlightthickness=2, cursor="hand2",
+            f = tk.Frame(sw, width=22, height=22, bg=body_fill(col), highlightthickness=2, cursor="hand2",
                          highlightbackground=C["border"])
             f.grid(row=0, column=i, padx=2)
             f.bind("<Button-1>", lambda e, c=col: self.v_color.set(c))
@@ -1971,6 +2211,15 @@ class ComponentEditor(tk.Toplevel):
         c = colorchooser.askcolor(color=self.v_color.get(), parent=self, title="Body color")
         if c and c[1]:
             self.v_color.set(c[1])
+
+    def on_theme(self):
+        """The app switched between light and dark mode."""
+        for f, col in self.swatches:
+            f.configure(bg=body_fill(col))
+        for cv in (self.pv, self.pic_cv):
+            cv.configure(bg=C["canvas"], highlightbackground=C["border"])
+        self._show_picture()
+        self._changed()
 
     def _refresh_rows(self, select=None):
         self.tree.delete(*self.tree.get_children())
@@ -2260,11 +2509,16 @@ class App:
         self._spin = {}
         self._mouse = (0, 0)
 
+        remember_menu_defaults(root)
+        set_palette(self.settings.get("theme") == "dark")
         self._setup_fonts()
         self._setup_style()
         self._build_menu()
         self._build_ui()
         self._bind_keys()
+        # new windows (editor, oscilloscope …) get a title bar that matches the theme (Windows)
+        root.bind_class("Toplevel", "<Map>", lambda e: set_title_bar_theme(e.widget, THEME["dark"]), add="+")
+        root.after(50, lambda: set_title_bar_theme(root, THEME["dark"]))
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.update_title()
         self.refresh_props()
@@ -2298,9 +2552,12 @@ class App:
             pass
         sc = self.ui_scale
         self.root.configure(bg=C["bg"])
+        apply_option_db(self.root)
         s.configure(".", background=C["bg"], foreground=C["text"], font=self.f_ui,
                     bordercolor=C["border"], lightcolor=C["panel"], darkcolor=C["border"],
-                    troughcolor=C["bg"], focuscolor=C["accent"])
+                    troughcolor=C["bg"], focuscolor=C["accent"], arrowcolor=C["arrow"])
+        s.map(".", background=[("disabled", C["clam_frame"]), ("active", C["clam_active"])],
+              foreground=[("disabled", C["clam_disabled"])])
         s.configure("Bg.TFrame", background=C["bg"])
         s.configure("Panel.TFrame", background=C["panel"])
         s.configure("Card.TFrame", background=C["panel"], relief="solid", borderwidth=1)
@@ -2315,47 +2572,64 @@ class App:
         s.configure("Head.TLabel", background=C["panel"], foreground=C["muted"], font=(self.fam, 8, "bold"))
         s.configure("Title.TLabel", background=C["panel"], font=self.f_title)
         s.configure("Status.TLabel", background=C["bg"], foreground=C["muted"])
-        s.configure("TButton", padding=(10, 4), width=0, background="#f6f8fa", bordercolor=C["border"],
-                    lightcolor="#f6f8fa", darkcolor="#f6f8fa", relief="flat")
-        s.map("TButton", background=[("pressed", C["accent_light"]), ("active", "#edf2fa"), ("disabled", "#f6f8fa")],
-              foreground=[("disabled", "#a0a8b2")])
+        s.configure("TButton", padding=(10, 4), width=0, background=C["button"], bordercolor=C["border"],
+                    lightcolor=C["button"], darkcolor=C["button"], relief="flat")
+        s.map("TButton", background=[("pressed", C["accent_light"]), ("active", C["button_hover"]),
+                                     ("disabled", C["button"])],
+              foreground=[("disabled", C["disabled"])])
+        s.configure("TMenubutton", background=C["button"], bordercolor=C["border"], lightcolor=C["button"],
+                    darkcolor=C["button"], relief="flat", arrowcolor=C["arrow"])
+        s.map("TMenubutton", background=[("pressed", C["accent_light"]), ("active", C["button_hover"])])
         s.configure("Tool.TButton", padding=(9, 4), width=0, background=C["panel"], lightcolor=C["panel"],
                     darkcolor=C["panel"], bordercolor=C["panel"])
-        s.map("Tool.TButton", background=[("pressed", C["accent_light"]), ("active", "#eef2f8")],
-              bordercolor=[("active", C["border"])], foreground=[("disabled", "#a7afb9")])
-        s.configure("Accent.TButton", background=C["accent"], foreground="white", bordercolor=C["accent"],
-                    lightcolor=C["accent"], darkcolor=C["accent"], font=self.f_bold)
-        s.map("Accent.TButton", background=[("pressed", C["accent_dark"]), ("active", C["accent_dark"])],
-              foreground=[("disabled", "#dfe7f7")])
-        s.configure("Sim.TButton", background=C["ok"], foreground="white", bordercolor=C["ok"],
-                    lightcolor=C["ok"], darkcolor=C["ok"], font=self.f_bold)
-        s.map("Sim.TButton", background=[("pressed", C["ok_dark"]), ("active", C["ok_dark"])])
-        s.configure("Stop.TButton", background=C["danger"], foreground="white", bordercolor=C["danger"],
-                    lightcolor=C["danger"], darkcolor=C["danger"], font=self.f_bold)
-        s.map("Stop.TButton", background=[("pressed", "#b91c1c"), ("active", "#b91c1c")])
-        s.configure("SimBar.TButton", padding=(9, 3), width=0, background="white", lightcolor="white",
-                    darkcolor="white", bordercolor=C["sim_border"])
-        s.map("SimBar.TButton", background=[("pressed", C["accent_light"]), ("active", "#f3faf6")])
+        s.map("Tool.TButton", background=[("pressed", C["accent_light"]), ("active", C["tool_hover"])],
+              bordercolor=[("active", C["border"])], foreground=[("disabled", C["disabled"])])
+        s.configure("Theme.Tool.TButton", padding=(7, 2), font=(self.fam, 11))
+        s.configure("Accent.TButton", background=C["accent_btn"], foreground=C["on_btn"], bordercolor=C["accent_btn"],
+                    lightcolor=C["accent_btn"], darkcolor=C["accent_btn"], font=self.f_bold)
+        s.map("Accent.TButton", background=[("pressed", C["accent_btn_press"]), ("active", C["accent_btn_press"])],
+              foreground=[("disabled", C["accent_btn_off"])])
+        s.configure("Sim.TButton", background=C["ok_btn"], foreground=C["on_btn"], bordercolor=C["ok_btn"],
+                    lightcolor=C["ok_btn"], darkcolor=C["ok_btn"], font=self.f_bold)
+        s.map("Sim.TButton", background=[("pressed", C["ok_btn_press"]), ("active", C["ok_btn_press"])])
+        s.configure("Stop.TButton", background=C["danger_btn"], foreground=C["on_btn"], bordercolor=C["danger_btn"],
+                    lightcolor=C["danger_btn"], darkcolor=C["danger_btn"], font=self.f_bold)
+        s.map("Stop.TButton", background=[("pressed", C["danger_btn_press"]), ("active", C["danger_btn_press"])])
+        s.configure("SimBar.TButton", padding=(9, 3), width=0, background=C["sim_btn"], lightcolor=C["sim_btn"],
+                    darkcolor=C["sim_btn"], bordercolor=C["sim_border"])
+        s.map("SimBar.TButton", background=[("pressed", C["accent_light"]), ("active", C["sim_btn_hover"])])
         s.configure("Danger.TButton", foreground=C["danger"])
-        s.configure("TEntry", fieldbackground="white", padding=4, bordercolor=C["border"],
-                    lightcolor="white", darkcolor="white")
-        s.map("TEntry", bordercolor=[("focus", C["accent"])], lightcolor=[("focus", C["accent"])])
-        s.configure("TCombobox", fieldbackground="white", padding=3, arrowsize=int(12 * sc))
-        s.configure("TSpinbox", fieldbackground="white", padding=3, arrowsize=int(10 * sc))
+        s.configure("TEntry", fieldbackground=C["field"], padding=4, bordercolor=C["border"],
+                    lightcolor=C["field"], darkcolor=C["field"], insertcolor=C["text"])
+        s.map("TEntry", bordercolor=[("focus", C["accent"])], lightcolor=[("focus", C["accent"])],
+              background=[("readonly", C["clam_frame"])])
+        s.configure("TCombobox", fieldbackground=C["field"], padding=3, arrowsize=int(12 * sc),
+                    insertcolor=C["text"], arrowcolor=C["arrow"])
+        s.map("TCombobox", fieldbackground=[("readonly", "focus", "#4a6984"), ("readonly", C["clam_frame"])],
+              foreground=[("readonly", "focus", "#ffffff")],
+              background=[("active", C["clam_active"]), ("pressed", C["clam_active"])],
+              arrowcolor=[("disabled", C["clam_disabled"])])
+        s.configure("TSpinbox", fieldbackground=C["field"], padding=3, arrowsize=int(10 * sc),
+                    insertcolor=C["text"], arrowcolor=C["arrow"])
+        s.map("TSpinbox", background=[("readonly", C["clam_frame"])], arrowcolor=[("disabled", C["clam_disabled"])])
+        s.configure("TCheckbutton", indicatorbackground=C["field"], indicatorforeground=C["text"],
+                    upperbordercolor=C["chk_hi"], lowerbordercolor=C["chk_lo"])
+        s.map("TCheckbutton", indicatorbackground=[("pressed", C["clam_frame"]), ("disabled", C["clam_frame"])])
         s.configure("Card.TCheckbutton", background=C["panel"])
         s.map("Card.TCheckbutton", background=[("active", C["panel"])])
-        s.configure("Panel.Horizontal.TScale", background=C["panel"], troughcolor="#e6eaf0")
-        s.configure("Treeview", background=C["panel"], fieldbackground=C["panel"], borderwidth=0,
-                    rowheight=int(22 * sc), font=self.f_ui)
-        s.configure("Treeview.Heading", background="#f3f5f8", font=self.f_bold, relief="flat",
-                    padding=(6, 3))
+        s.configure("Panel.Horizontal.TScale", background=C["panel"], troughcolor=C["trough"])
+        s.configure("Treeview", background=C["panel"], fieldbackground=C["panel"], foreground=C["text"],
+                    borderwidth=0, rowheight=int(22 * sc), font=self.f_ui)
+        s.configure("Treeview.Heading", background=C["heading"], foreground=C["text"], font=self.f_bold,
+                    relief="flat", padding=(6, 3))
+        s.map("Treeview.Heading", background=[("active", C["clam_active"])])
         s.map("Treeview", background=[("selected", C["accent_light"])],
               foreground=[("selected", C["text"])])
         s.configure("Lib.Treeview", rowheight=int(24 * sc))
         s.configure("TPanedwindow", background=C["border"])
         s.configure("TSeparator", background=C["border"])
-        s.configure("Vertical.TScrollbar", arrowsize=int(12 * sc), background="#e6eaf0",
-                    bordercolor=C["bg"], troughcolor=C["bg"], gripcount=0)
+        s.configure("Vertical.TScrollbar", arrowsize=int(12 * sc), background=C["thumb"],
+                    bordercolor=C["bg"], troughcolor=C["bg"], gripcount=0, arrowcolor=C["arrow"])
 
     def _build_menu(self):
         m = tk.Menu(self.root)
@@ -2413,6 +2687,9 @@ class App:
                            command=lambda: self.set_wire_style(self.v_style.get()))
         vm.add_radiobutton(label="Straight wires", variable=self.v_style, value="straight",
                            command=lambda: self.set_wire_style(self.v_style.get()))
+        vm.add_separator()
+        self.v_dark = tk.BooleanVar(value=THEME["dark"])
+        vm.add_checkbutton(label="Dark mode", variable=self.v_dark, command=lambda: self.set_theme(self.v_dark.get()))
         m.add_cascade(label="View", menu=vm)
 
         cm = tk.Menu(m, tearoff=0)
@@ -2468,6 +2745,11 @@ class App:
         self.b_sim = ttk.Button(tb, text="▶  Simulate", style="Sim.TButton", command=self.sim_toggle, takefocus=False)
         self.b_sim.pack(side="right", padx=(0, 8))
         Tooltip(self.b_sim, "Run the circuit: live voltages and currents (F5)")
+        self.b_theme = ttk.Button(tb, style="Theme.Tool.TButton", command=lambda: self.set_theme(not THEME["dark"]),
+                                  takefocus=False)
+        self.b_theme.pack(side="right", padx=(0, 4))
+        self.b_theme_tip = Tooltip(self.b_theme, "")
+        self._theme_button_text()
         self._tool(tb, "New", self.new_file, "New circuit (Ctrl+N)")
         self._tool(tb, "Open", self.open_dialog, "Open a circuit (Ctrl+O)")
         self._tool(tb, "Save", self.save, "Save (Ctrl+S)")
@@ -2480,7 +2762,7 @@ class App:
         self._tool(tb, "Delete", self.delete_sel, "Delete selection (Del)")
         self._sep(tb)
         ttk.Label(tb, text="Wire color", background=C["panel"]).pack(side="left", padx=(2, 6))
-        self.wire_sw = tk.Frame(tb, width=int(16 * sc), height=int(16 * sc), bg=self.wire_color,
+        self.wire_sw = tk.Frame(tb, width=int(16 * sc), height=int(16 * sc), bg=ink(self.wire_color),
                                 highlightthickness=1, highlightbackground=C["border"])
         self.wire_sw.pack(side="left")
         self.v_wcolor = tk.StringVar(value=WIRE_COLOR_NAMES.get(self.wire_color, "Blue"))
@@ -2852,8 +3134,7 @@ class App:
         cv.delete("all")
         W, H = cv.winfo_width(), cv.winfo_height()
         if self.panx is None:
-            if W <= 1:
-                self.request_redraw()
+            if W <= 1:   # not on screen yet: the canvas's <Configure> event redraws it once it has a size
                 return
             self.panx, self.pany = W * 0.25, H * 0.3
         z = self.zoom
@@ -2891,8 +3172,8 @@ class App:
             if wid in hl_w:
                 cv.create_line(*cp, fill=C["highlight"], width=lw * 4, capstyle="round", joinstyle="round")
             if ("w", wid) in self.sel:
-                cv.create_line(*cp, fill="#bfd3ff", width=lw * 3.2, capstyle="round", joinstyle="round")
-            cv.create_line(*cp, fill=w.get("color", C["accent"]), width=lw, capstyle="round",
+                cv.create_line(*cp, fill=C["sel_wire"], width=lw * 3.2, capstyle="round", joinstyle="round")
+            cv.create_line(*cp, fill=ink(w.get("color") or WIRE_COLORS[0][1]), width=lw, capstyle="round",
                            joinstyle="round", tags=("wire", "w:" + wid))
         for cid, c in self.comps.items():
             render_component(cv, self.rdef(c), c, self.T, z, self.fam,
@@ -2903,13 +3184,13 @@ class App:
             if key[0] in self.comps:
                 x, y = self.T(*self.pin_world(key))
                 r = 7 * z
-                cv.create_oval(x - r, y - r, x + r, y + r, outline="#d97706", width=2)
+                cv.create_oval(x - r, y - r, x + r, y + r, outline=C["net_pin"], width=2)
         wsel = [k[1] for k in self.sel if k[0] == "w" and k[1] in self.wires]
         if len(wsel) == 1:
             for b in self.wires[wsel[0]].get("bends", []):
                 x, y = self.T(*b)
                 r = max(3.5, 4.5 * z)
-                cv.create_rectangle(x - r, y - r, x + r, y + r, fill="white", outline=C["select"], width=1.5)
+                cv.create_rectangle(x - r, y - r, x + r, y + r, fill=C["handle"], outline=C["select"], width=1.5)
         self._sim_draw()
         self.draw_overlay()
         self.update_counts()
@@ -2941,7 +3222,7 @@ class App:
             rp, _ = route_points(pts, self.pin_dir(start), db, self.wire_style)
             cp = [c for p in rp for c in self.T(*p)]
             if len(cp) >= 4:
-                cv.create_line(*cp, fill=self.wire_color, width=max(1.5, 2.4 * z), dash=(6, 4),
+                cv.create_line(*cp, fill=ink(self.wire_color), width=max(1.5, 2.4 * z), dash=(6, 4),
                                capstyle="round", tags="overlay")
             for key in (start, target):
                 if key:
@@ -2981,11 +3262,11 @@ class App:
             v = self.sim.pin_v(key)
             if v is not None:
                 txt += "   =  " + fmt_si(v, "V")
-        t = cv.create_text(x + 14, y - 14, text=txt, anchor="sw", fill="white",
+        t = cv.create_text(x + 14, y - 14, text=txt, anchor="sw", fill=C["tip_fg"],
                            font=(self.fam, -int(11 * self.ui_scale)), tags="overlay")
         bx = cv.bbox(t)
         if bx:
-            r = cv.create_rectangle(bx[0] - 6, bx[1] - 3, bx[2] + 6, bx[3] + 3, fill="#1f2933",
+            r = cv.create_rectangle(bx[0] - 6, bx[1] - 3, bx[2] + 6, bx[3] + 3, fill=C["tip_bg"],
                                     outline="", tags="overlay")
             cv.tag_lower(r, t)
 
@@ -3744,7 +4025,7 @@ class App:
 
     def set_wire_color(self, col):
         self.wire_color = col
-        self.wire_sw.configure(bg=col)
+        self.wire_sw.configure(bg=ink(col))
         self.v_wcolor.set(WIRE_COLOR_NAMES.get(col, "Blue"))
         self.settings["wire_color"] = col
         self.save_settings()
@@ -3779,6 +4060,41 @@ class App:
             save_json(self.settings_path, self.settings)
         except OSError:
             pass
+
+    # ------------------------------------------------------------ light / dark mode
+    def _theme_button_text(self):
+        dark = THEME["dark"]
+        self.b_theme.configure(text="☀" if dark else "☾")
+        self.b_theme_tip.text = ("Switch to light mode  (View › Dark mode)" if dark
+                                 else "Switch to dark mode  (View › Dark mode)")
+
+    def set_theme(self, dark):
+        """Switch between light and dark mode, live, in every open window."""
+        dark = bool(dark)
+        self.v_dark.set(dark)
+        if dark == THEME["dark"]:
+            return
+        self.commit_props()
+        old = dict(C)
+        set_palette(dark)
+        self._setup_style()
+        retheme_widgets(self.root, old, C)
+        self.wire_sw.configure(bg=ink(self.wire_color), highlightbackground=C["border"])
+        self._theme_button_text()
+        self.settings["theme"] = "dark" if dark else "light"
+        self.save_settings()
+        set_title_bar_theme(self.root, dark)
+        for w in self.root.winfo_children():
+            if isinstance(w, tk.Toplevel):
+                set_title_bar_theme(w, dark)
+                if hasattr(w, "on_theme"):
+                    try:
+                        w.on_theme()
+                    except tk.TclError:
+                        pass
+        self.refresh_props()
+        self._lib_select()
+        self._redraw()
 
     def context_menu(self, e):
         wx, wy = self.to_world(e.x, e.y)
@@ -3946,7 +4262,7 @@ class App:
         if not simming:
             ttk.Label(f, text="Notes", style="Panel.TLabel").grid(row=r, column=0, sticky="w")
             t = tk.Text(f, height=3, width=24, wrap="word", font=self.f_ui, relief="flat", highlightthickness=1,
-                        highlightbackground=C["border"], highlightcolor=C["accent"], padx=6, pady=4)
+                        padx=6, pady=4, **text_colors())
             t.insert("1.0", c.get("notes", ""))
             t.grid(row=r + 1, column=0, columnspan=2, sticky="ew", pady=(2, 0))
             t.bind("<FocusOut>", lambda e: self.commit_props())
@@ -4103,7 +4419,7 @@ class App:
         sf.grid(row=row, column=0, sticky="w")
         sz = int(20 * self.ui_scale)
         for i, (name, col) in enumerate(WIRE_COLORS):
-            fr = tk.Frame(sf, width=sz, height=sz, bg=col, cursor="hand2", highlightthickness=2,
+            fr = tk.Frame(sf, width=sz, height=sz, bg=ink(col), cursor="hand2", highlightthickness=2,
                           highlightbackground=C["text"] if col == current else C["panel"])
             fr.grid(row=i // 5, column=i % 5, padx=2, pady=2)
             fr.bind("<Button-1>", lambda e, c=col: self.recolor_wires(wids, c))
@@ -4668,7 +4984,7 @@ class CheckDialog(tk.Toplevel):
             head, col = "%d error%s, %d warning%s" % (errs, "" if errs == 1 else "s", warns, "" if warns == 1 else "s"), C["danger"]
         else:
             head, col = "%d warning%s, %d note%s" % (warns, "" if warns == 1 else "s", len(issues) - warns,
-                                                     "" if len(issues) - warns == 1 else "s"), "#b45309"
+                                                     "" if len(issues) - warns == 1 else "s"), C["warn"]
         tk.Label(top, text=head, bg=C["bg"], fg=col, font=(app.fam, 12, "bold")).pack(anchor="w")
         ttk.Label(top, text="Double-click a line to select that part. Unused pins on microcontrollers are not listed.",
                   style="Status.TLabel").pack(anchor="w")
@@ -4682,7 +4998,7 @@ class CheckDialog(tk.Toplevel):
         tv.column("sev", width=int(80 * s), stretch=False)
         tv.column("msg", width=int(480 * s))
         tv.tag_configure("Error", foreground=C["danger"])
-        tv.tag_configure("Warning", foreground="#b45309")
+        tv.tag_configure("Warning", foreground=C["warn"])
         tv.tag_configure("Info", foreground=C["muted"])
         order = {"Error": 0, "Warning": 1, "Info": 2}
         self.items = {}
@@ -6853,10 +7169,15 @@ def _app_export_svg(self):
     saved = (self.zoom, self.panx, self.pany, self.sel, self.highlight, self.hover_pin, self.mode)
     self.zoom, self.sel, self.highlight, self.hover_pin, self.mode = 1.0, set(), None, None, "idle"
     self.ghost = None
-    self._redraw()
-    svg = canvas_to_svg(self.cv)
-    self.zoom, self.panx, self.pany, self.sel, self.highlight, self.hover_pin, self.mode = saved
-    self._redraw()
+    was_dark = THEME["dark"]
+    set_palette(False)   # lab-report images are always drawn in the light (printable) colors
+    try:
+        self._redraw()
+        svg = canvas_to_svg(self.cv)
+    finally:
+        set_palette(was_dark)
+        self.zoom, self.panx, self.pany, self.sel, self.highlight, self.hover_pin, self.mode = saved
+        self._redraw()
     if not svg:
         return
     try:
@@ -6903,7 +7224,8 @@ def _app_show_help(self):
         "    the Component Editor for your own boards.\n"
         "•  Files are saved as .circuit and include any custom parts they use (with their pictures),\n"
         "    so you can share them.\n"
-        "•  File › Export image saves an SVG you can put in a lab report.")
+        "•  File › Export image saves an SVG you can put in a lab report.\n"
+        "•  Prefer a dark screen? Click  ☾  next to  ▶ Simulate  (or View › Dark mode).")
     ttk.Label(f, text=text, style="Panel.TLabel", justify="left").pack(anchor="w", pady=(8, 12))
     ttk.Label(f, text="Keyboard & mouse", style="Card.TLabel").pack(anchor="w")
     kf = ttk.Frame(f, style="Panel.TFrame")
@@ -7252,7 +7574,7 @@ class _SimUI:
                 R = s * 0.95
                 cv.create_arc(X - R, Y - R, X + R, Y + R, start=a, extent=100 if sp > 0 else -100, style="arc",
                               outline=C["accent"], width=max(2.0, 2.5 * z), tags="sim")
-            cross = v.get("cross")
+            cross = ink(v.get("cross"))
             if cross:
                 p = [self.T(*local_to_world(c, rd, px, py)) for px, py in ((bx0, by0), (bx1, by1), (bx0, by1), (bx1, by0))]
                 cv.create_line(p[0][0], p[0][1], p[1][0], p[1][1], fill=cross, width=max(2.0, 2.5 * z), tags="sim")
@@ -7300,15 +7622,15 @@ class _SimUI:
                 if best is None:
                     continue
                 PX, PY = self.T(best[0], best[1])
-                col = "#b91c1c" if volt > 0.05 else "#1d4ed8" if volt < -0.05 else C["muted"]
+                col = C["volt_pos"] if volt > 0.05 else C["volt_neg"] if volt < -0.05 else C["muted"]
                 if best[2]:
                     t = cv.create_text(PX, PY - 5, text=fmt_si(volt, "V"), anchor="s", fill=col, font=fs, tags="sim")
                 else:
                     t = cv.create_text(PX + 6, PY, text=fmt_si(volt, "V"), anchor="w", fill=col, font=fs, tags="sim")
                 b = cv.bbox(t)
                 if b:
-                    rr = cv.create_rectangle(b[0] - 3, b[1] - 1, b[2] + 3, b[3] + 1, fill="white",
-                                             outline=_mix("#ffffff", col, 0.35), tags="sim")
+                    rr = cv.create_rectangle(b[0] - 3, b[1] - 1, b[2] + 3, b[3] + 1, fill=C["volt_bg"],
+                                             outline=_mix(C["volt_bg"], col, 0.35), tags="sim")
                     cv.tag_lower(rr, t)
         cv.tag_raise("overlay")
 
@@ -7327,7 +7649,7 @@ class _SimUI:
             except Exception:
                 pass
         mx, my = self._mouse
-        t = cv.create_text(mx + 16, my + 18, text="\n".join(lines), anchor="nw", fill="white",
+        t = cv.create_text(mx + 16, my + 18, text="\n".join(lines), anchor="nw", fill=C["tip_fg"],
                            font=(self.fam, -int(11 * self.ui_scale)), tags="overlay")
         b = cv.bbox(t)
         if b:
@@ -7336,7 +7658,7 @@ class _SimUI:
             if dx or dy:
                 cv.move(t, dx, dy)
                 b = cv.bbox(t)
-            r = cv.create_rectangle(b[0] - 8, b[1] - 6, b[2] + 8, b[3] + 6, fill="#1f2933", outline="", tags="overlay")
+            r = cv.create_rectangle(b[0] - 8, b[1] - 6, b[2] + 8, b[3] + 6, fill=C["tip_bg"], outline="", tags="overlay")
             cv.tag_lower(r, t)
 
     # ---------------------------------------------------------------- interaction
@@ -7743,7 +8065,7 @@ class ScopeWindow(tk.Toplevel):
         mb.pack(side="left", padx=4)
         self._subs = []
         ttk.Button(top, text="Export CSV…", command=self._export).pack(side="right")
-        self.cv = tk.Canvas(self, bg="white", highlightthickness=1, highlightbackground=C["border"])
+        self.cv = tk.Canvas(self, bg=C["plot_bg"], highlightthickness=1, highlightbackground=C["border"])
         self.cv.pack(fill="both", expand=True, padx=10, pady=4)
         self.legend = ttk.Frame(self, style="Bg.TFrame", padding=(10, 2, 10, 10))
         self.legend.pack(fill="x")
@@ -7757,6 +8079,11 @@ class ScopeWindow(tk.Toplevel):
     def close(self):
         self.app.scope_win = None
         self.destroy()
+
+    def on_theme(self):
+        self.cv.configure(bg=C["plot_bg"], highlightbackground=C["border"])
+        self.build_legend()
+        self.redraw(True)
 
     def window_value(self):
         return dict(self.WINDOWS).get(self.v_win.get())
@@ -7804,7 +8131,7 @@ class ScopeWindow(tk.Toplevel):
         for i, tr in enumerate(trs):
             row = tk.Frame(self.legend, bg=C["bg"])
             row.grid(row=i // 3, column=i % 3, sticky="w", padx=(0, 18), pady=2)
-            tk.Frame(row, width=16, height=4, bg=tr["color"]).pack(side="left", padx=(0, 6))
+            tk.Frame(row, width=16, height=4, bg=ink(tr["color"])).pack(side="left", padx=(0, 6))
             tk.Label(row, text=tr["name"], bg=C["bg"], fg=C["text"], font=self.app.f_bold).pack(side="left")
             v = tk.StringVar(value="")
             self.val_vars.append(v)
@@ -7872,7 +8199,7 @@ class ScopeWindow(tk.Toplevel):
 
         vlo, vhi, vt = _nice_ticks(*rng(volt))
         alo, ahi, at = _nice_ticks(*rng(amp))
-        grid = "#eef1f5"
+        grid = C["plot_grid"]
 
         def Xt(t):
             return x0 + (t - t0) / (t1 - t0) * (x1 - x0)
@@ -7885,7 +8212,7 @@ class ScopeWindow(tk.Toplevel):
                 cv.create_text(X, y1 + 4, text=fmt_si(tt, "s"), anchor="n", fill=C["muted"], font=font)
         for v in vt:
             Y = y1 - (v - vlo) / (vhi - vlo) * (y1 - y0)
-            cv.create_line(x0, Y, x1, Y, fill="#d6dce4" if v == 0 else grid)
+            cv.create_line(x0, Y, x1, Y, fill=C["plot_zero"] if v == 0 else grid)
             if volt:
                 cv.create_text(x0 - 6, Y, text=fmt_si(v, "V"), anchor="e", fill=C["muted"], font=font)
         if amp:
@@ -7905,7 +8232,7 @@ class ScopeWindow(tk.Toplevel):
                     Y = y1 - (v - lo) / (hi - lo) * (y1 - y0)
                     coords += [X, max(y0, min(y1, Y))]
                 if len(coords) >= 4:
-                    cv.create_line(*coords, fill=tr["color"], width=max(1.5, 2 * s))
+                    cv.create_line(*coords, fill=ink(tr["color"]), width=max(1.5, 2 * s))
         if not trs:
             cv.create_text((x0 + x1) / 2, (y0 + y1) / 2, fill=C["muted"], font=(app.fam, -int(12 * s)),
                            text="Nothing plotted yet.\nRight-click a wire or a part and choose “Plot…”.", justify="center")
@@ -7968,7 +8295,7 @@ class FreqWindow(tk.Toplevel):
         self.info_var = tk.StringVar(value="Choose the input source and where to measure, then press Plot.")
         tk.Label(self, textvariable=self.info_var, bg=C["bg"], fg=C["text"], font=app.f_bold, anchor="w",
                  justify="left").pack(fill="x", padx=12, pady=(4, 0))
-        self.cv = tk.Canvas(self, bg="white", highlightthickness=1, highlightbackground=C["border"])
+        self.cv = tk.Canvas(self, bg=C["plot_bg"], highlightthickness=1, highlightbackground=C["border"])
         self.cv.pack(fill="both", expand=True, padx=10, pady=(4, 10))
         self.cv.bind("<Configure>", lambda e: self.draw())
         self.cv.bind("<Motion>", self._motion)
@@ -7986,6 +8313,10 @@ class FreqWindow(tk.Toplevel):
     def close(self):
         self.app.freq_win = None
         self.destroy()
+
+    def on_theme(self):
+        self.cv.configure(bg=C["plot_bg"], highlightbackground=C["border"])
+        self.draw()
 
     def refresh_lists(self):
         app = self.app
@@ -8135,7 +8466,7 @@ class FreqWindow(tk.Toplevel):
                            fill=C["muted"], font=(app.fam, -int(12 * s)))
             return
         f, g, ph = self.data
-        grid, minor = "#e6eaf0", "#f3f5f8"
+        grid, minor = C["bode_grid"], C["bode_minor"]
         for d in range(int(math.floor(math.log10(f[0]))), int(math.ceil(math.log10(f[-1]))) + 1):
             for m in range(1, 10):
                 fr = m * 10 ** d
@@ -8169,8 +8500,8 @@ class FreqWindow(tk.Toplevel):
                 cv.create_line(*seg, fill=C["accent"], width=max(1.5, 2 * s))
         for mk in self.marks:
             X = self._x(mk, x0, x1)
-            cv.create_line(X, a0, X, b1, fill="#ea580c", dash=(4, 3))
-            cv.create_text(X + 4, a1 - 4, text="−3 dB  " + fmt_si(mk, "Hz"), anchor="sw", fill="#ea580c", font=font)
+            cv.create_line(X, a0, X, b1, fill=C["marker"], dash=(4, 3))
+            cv.create_text(X + 4, a1 - 4, text="−3 dB  " + fmt_si(mk, "Hz"), anchor="sw", fill=C["marker"], font=font)
         if self.hover is not None:
             i = self.hover
             X = self._x(f[i], x0, x1)
@@ -8179,10 +8510,10 @@ class FreqWindow(tk.Toplevel):
                                                 ("%.2f" % g[i]) if math.isfinite(g[i]) else "—",
                                                 ("%.1f" % ph[i]) if math.isfinite(ph[i]) else "—")
             t = cv.create_text(min(X + 8, x1 - 4), a0 + 22 * s, text=txt.replace("-", "−"),
-                               anchor="nw" if X + 8 < x1 - 220 * s else "ne", fill="white", font=font)
+                               anchor="nw" if X + 8 < x1 - 220 * s else "ne", fill=C["tip_fg"], font=font)
             b = cv.bbox(t)
             if b:
-                r = cv.create_rectangle(b[0] - 6, b[1] - 3, b[2] + 6, b[3] + 3, fill="#1f2933", outline="")
+                r = cv.create_rectangle(b[0] - 6, b[1] - 3, b[2] + 6, b[3] + 3, fill=C["tip_bg"], outline="")
                 cv.tag_lower(r, t)
 
     def _motion(self, e):

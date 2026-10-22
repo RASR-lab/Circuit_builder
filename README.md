@@ -42,9 +42,14 @@ Click **More info → Run anyway**.
 | Zoom / move around | Mouse wheel zooms; right- or middle-drag pans; **0** fits the circuit |
 | Select several things | Drag a box around them, or Ctrl+click |
 | Simulate | **▶ Simulate** (top right) or **F5**; press again to stop |
+| Light / dark mode | Click **☾** (next to Simulate; it turns into **☀** to switch back) or tick *View › Dark mode* |
 
 Pins show **filled** when connected and **hollow** while still free.
 Hover over a pin to see its name and which net it is on.
+
+**Dark mode** recolors every window straight away, including the Component Editor, oscilloscope and Bode plot if they are open, and the app remembers your choice next time.
+Wires and traces are drawn a little brighter in dark mode so they stand out (a *Black* wire shows as light grey), but your files keep the colors you picked, and *Export image (SVG)* always uses the normal light colors so drawings print well in lab reports.
+On Windows 10/11 the title bars turn dark too; the menu bar strip itself follows Windows' own colors.
 
 **Ground and power rails:** every Ground symbol is connected together, and so is every Power Rail (VCC) with the same value (e.g. `+5 V`).
 You can put a ground symbol wherever it's convenient instead of running long wires.
@@ -154,7 +159,7 @@ Resistor, capacitor, electrolytic capacitor, inductor, potentiometer, LDR, fuse,
 ## Files and storage
 
 - Circuits are saved as `.circuit` files (plain JSON, easy to grade or diff). Switch positions and slider settings are saved with the circuit.
-- Your component library and settings live in `%APPDATA%\CircuitBuilder\`.
+- Your component library and settings (including light or dark mode) live in `%APPDATA%\CircuitBuilder\`.
   Copy `my_components.cblib` from there to back them up.
 - To open a `.circuit` file by double-clicking, right-click it → *Open with* → choose `CircuitBuilder.exe`.
 
