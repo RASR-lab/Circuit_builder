@@ -43,6 +43,7 @@ Click **More info → Run anyway**.
 | Select several things | Drag a box around them, or Ctrl+click |
 | Simulate | **▶ Simulate** (top right) or **F5**; press again to stop |
 | Light / dark mode | Click **☾** (next to Simulate; it turns into **☀** to switch back) or tick *View › Dark mode* |
+| Bigger or smaller text on the diagram | *View › Diagram text size* › **Small**, **Normal** or **Large** (remembered next time) |
 
 Pins show **filled** when connected and **hollow** while still free.
 Hover over a pin to see its name and which net it is on.
@@ -214,7 +215,7 @@ Resistor, capacitor, electrolytic capacitor, inductor, potentiometer, LDR, fuse,
 ## Files and storage
 
 - Circuits are saved as `.circuit` files (plain JSON, easy to grade or diff). Switch positions and slider settings are saved with the circuit.
-- Your component library and settings (including light or dark mode) live in `%APPDATA%\CircuitBuilder\`.
+- Your component library and settings (including light or dark mode and diagram text size) live in `%APPDATA%\CircuitBuilder\`.
   Copy `my_components.cblib` from there to back them up.
 - To open a `.circuit` file by double-clicking, right-click it → *Open with* → choose `CircuitBuilder.exe`.
 
@@ -242,6 +243,7 @@ Rebuild the `.exe` afterwards if you hand that out.
 - **Nothing happens when I double-click the .bat**: Python isn't on the PATH. Reinstall Python and tick "Add python.exe to PATH".
 - **The exe build fails with `PermissionError: [WinError 5] Access is denied`**: OneDrive (or Dropbox) locked PyInstaller's files. `Build Windows EXE.bat` now builds in your TEMP folder to avoid this; if you still see it, delete any old `build` folder next to the script (pause OneDrive syncing first) and run it again.
 - **Everything looks tiny or huge**: use the zoom buttons or **Fit**. The app follows your Windows display scaling.
+- **Labels are hard to read**: pick *View › Diagram text size › Large*. It makes part names, values, pin names and simulation readings bigger without zooming.
 - **I lost a custom part**: check `%APPDATA%\CircuitBuilder\my_components.cblib`, or re-import a `.cblib` / open a `.circuit` that used it.
 - **The simulation says "Short circuit"**: a battery, source or power rail has a plain wire (or an ammeter) straight across it. Click the message to find the part.
 - **A part shows "not simulated"**: it has no simulation model (see *What is simulated* above); its pins are left unconnected.

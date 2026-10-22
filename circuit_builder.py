@@ -941,6 +941,21 @@ def anchor_for(dx, dy):
 
 _FONT_CACHE = {}
 
+# Diagram text size, chosen in View -> Diagram text size.  Multiplies every label
+# drawn on the circuit canvas (part names, values, pin names, simulation readings).
+TEXT_SIZES = (("small", "Small", 0.85), ("normal", "Normal", 1.0), ("large", "Large", 1.3))
+DIAGRAM_FONT_SCALE = 1.0
+
+
+def set_diagram_text_size(key):
+    global DIAGRAM_FONT_SCALE
+    DIAGRAM_FONT_SCALE = dict((k, f) for k, _n, f in TEXT_SIZES).get(key, 1.0)
+
+
+def dpx(base, z):
+    """Pixel size for diagram text of a given base size at zoom z."""
+    return int(round(base * DIAGRAM_FONT_SCALE * z))
+
 
 def _fit_text(text, fam, px, weight, max_w):
     """Shorten text with … so it fits in max_w pixels."""
@@ -969,7 +984,7 @@ def _draw_picture_body(cv, rd, comp, tp, z, fam, color, label, value, tags):
     (ax, ay), (bx, by) = tp((x0, y0)), tp((x1, y1))
     sx0, sx1 = sorted((ax, bx))
     sy0, sy1 = sorted((ay, by))
-    big, small = int(round(11 * z)), int(round(9 * z))
+    big, small = dpx(11, z), dpx(9, z)
     sub = (rd.name + ("  ·  " + value if value else "")) if label else value
     lines = []
     if big >= 5:
@@ -1047,14 +1062,14 @@ def render_component(cv, rd, comp, T, z, fam, state="normal", connected=frozense
             cv.create_oval(cx - r, cy - r, cx + r, cy + r, outline=stroke, width=lw,
                            fill=fill_of(p.get("fill")), tags=tags)
         elif t == "text":
-            px = int(round(p.get("size", 11) * z))
+            px = dpx(p.get("size", 11), z)
             if px < 5:
                 continue
             x, y = tp(p["p"])
             cv.create_text(x, y, text=p["s"], fill=stroke, tags=tags,
                            font=(fam, -px, "bold" if p.get("bold") else "normal"))
         elif t == "pintext":
-            px = int(round(9 * z))
+            px = dpx(9, z)
             if not show_pin_labels or px < 6:
                 continue
             x, y = tp(p["p"])
@@ -1079,7 +1094,7 @@ def render_component(cv, rd, comp, T, z, fam, state="normal", connected=frozense
         else:
             cx, cy = tp((w / 2.0, h / 2.0))
             wrap = max(20, h * G * z * 0.85)
-        big, small = int(round(11 * z)), int(round(9 * z))
+        big, small = dpx(11, z), dpx(9, z)
         if big >= 5:
             top = cv.create_text(cx, cy, text=label or rd.name, anchor="s", fill=stroke,
                                  font=(fam, -big, "bold"), width=wrap, justify="center", tags=tags)
@@ -1094,7 +1109,7 @@ def render_component(cv, rd, comp, T, z, fam, state="normal", connected=frozense
             lines.append(label)
         if rd.label_mode in ("both", "value") and value:
             lines.append(value)
-        px = int(round(11 * z))
+        px = dpx(11, z)
         if lines and px >= 5:
             x, y = tp(rd.label_pt)
             ox, oy = rd.label_pt[0] - rd.pivot[0], rd.label_pt[1] - rd.pivot[1]
@@ -3332,6 +3347,8 @@ class App:
         self.wire_style = self.settings.get("wire_style", "orthogonal")
         self.wire_color = self.settings.get("wire_color", WIRE_COLORS[0][1])
         self.show_grid = self.settings.get("show_grid", True)
+        self.text_size = self.settings.get("text_size", "normal")
+        set_diagram_text_size(self.text_size)
         try:
             self.ui_scale = max(1.0, min(3.0, root.winfo_fpixels("1i") / 96.0))
         except tk.TclError:
@@ -3553,6 +3570,13 @@ class App:
                            command=lambda: self.set_wire_style(self.v_style.get()))
         vm.add_radiobutton(label="Straight wires", variable=self.v_style, value="straight",
                            command=lambda: self.set_wire_style(self.v_style.get()))
+        vm.add_separator()
+        tsm = tk.Menu(vm, tearoff=0)
+        self.v_text_size = tk.StringVar(value=self.text_size)
+        for key, name, _f in TEXT_SIZES:
+            tsm.add_radiobutton(label=name, variable=self.v_text_size, value=key,
+                                command=lambda: self.set_text_size(self.v_text_size.get()))
+        vm.add_cascade(label="Diagram text size", menu=tsm)
         vm.add_separator()
         self.v_dark = tk.BooleanVar(value=THEME["dark"])
         vm.add_checkbutton(label="Dark mode", variable=self.v_dark, command=lambda: self.set_theme(self.v_dark.get()))
@@ -4914,6 +4938,17 @@ class App:
         self.settings["wire_style"] = style
         self.save_settings()
         self.request_redraw()
+
+    def set_text_size(self, key):
+        self.text_size = key
+        set_diagram_text_size(key)
+        self.settings["text_size"] = key
+        self.save_settings()
+        self.request_redraw()
+        try:
+            self._lib_select()  # library preview uses the same text size
+        except tk.TclError:
+            pass
 
     def _toggle_grid(self):
         self.show_grid = self.v_grid.get()
@@ -8774,7 +8809,7 @@ class _SimUI:
         z = self.zoom
         s = G * z
         x = sim.x
-        fpx = max(8, int(round(10 * z)))
+        fpx = max(8, dpx(10, z))
         fontb = (self.fam, -fpx, "bold")
         below = "wire" if cv.find_withtag("wire") else "comp"
         now = time.perf_counter()
@@ -8818,7 +8853,7 @@ class _SimUI:
                 cv.create_line(p[2][0], p[2][1], p[3][0], p[3][1], fill=cross, width=max(2.0, 2.5 * z), tags="sim")
             if v.get("sound") and int(now * 4) % 2 == 0:
                 cv.create_text(X + s * 1.1, Y - s * 1.0, text="♪", fill=C["accent"],
-                               font=(self.fam, -max(10, int(17 * z)), "bold"), tags="sim")
+                               font=(self.fam, -max(10, dpx(17, z)), "bold"), tags="sim")
             pst = v.get("pinstate")
             if pst:
                 rr = max(3.4, 4.4 * z)
@@ -8846,7 +8881,7 @@ class _SimUI:
                                              outline="", tags="sim")
                     cv.tag_lower(rr, t)
         if self.show_volts and z >= 0.45 * self.ui_scale:
-            fs = (self.fam, -max(8, int(round(9.5 * z))))
+            fs = (self.fam, -max(8, dpx(9.5, z)))
             for net in self.compute_nets():
                 node = sim.node_of.get(tuple(net["pins"][0]))
                 if node is None or node == 0:
