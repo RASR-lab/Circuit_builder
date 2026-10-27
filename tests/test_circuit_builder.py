@@ -368,6 +368,207 @@ class BuiltinParts(unittest.TestCase):
                     self.assertIsNotNone(cb.clean_def(d), f)
 
 
+# --------------------------------------------------------------------------- symbol styles
+class SymbolStyles(unittest.TestCase):
+    def tearDown(self):
+        cb.set_symbol_style("ansi")
+
+    def test_iec_symbols_keep_every_pin(self):
+        """Switching to IEC symbols must never move a pin (wires stay attached)."""
+        for d in cb.BUILTIN_DEFS:
+            cb.set_symbol_style("ansi")
+            a = cb.RDef(d)
+            cb.set_symbol_style("iec")
+            b = cb.RDef(d)
+            self.assertEqual(a.pins, b.pins, d["id"])
+            self.assertEqual(a.pivot, b.pivot, d["id"])
+            if d.get("symbol") in cb.IEC_SYMBOLS:
+                self.assertNotEqual(a.prims, b.prims, d["id"])
+                # the drawing stays near its pins
+                x0, y0, x1, y1 = b.body_bbox
+                px = [p["x"] for p in b.pins]
+                py = [p["y"] for p in b.pins]
+                self.assertTrue(x0 >= min(px) - 1.5 and x1 <= max(px) + 2.5, d["id"])
+                self.assertTrue(y0 >= min(py) - 1.5 and y1 <= max(py) + 1.5, d["id"])
+
+    def test_iec_resistor_is_a_box(self):
+        cb.set_symbol_style("iec")
+        rd = cb.RDef(next(d for d in cb.BUILTIN_DEFS if d["id"] == "resistor"))
+        self.assertTrue(any(p["t"] == "poly" and len(p["pts"]) == 4 for p in rd.prims))
+        cb.set_symbol_style("nonsense")
+        self.assertEqual(cb.SYMBOL_STYLE["style"], "ansi")
+
+    def test_style_setting_is_checked(self):
+        self.assertEqual(cb.clean_settings({"symbol_style": "iec"})["symbol_style"], "iec")
+        self.assertNotIn("symbol_style", cb.clean_settings({"symbol_style": "din"}))
+
+
+# --------------------------------------------------------------------------- SPICE and KiCad export
+def _builder():
+    """Tiny circuit builder for export tests: add(def, label, value) -> id; w(a, pin, b, pin)."""
+    comps, wires = [], []
+
+    def add(did, label, value=None, **kw):
+        d = next(b for b in cb.BUILTIN_DEFS if b["id"] == did)
+        cid = "p%d" % (len(comps) + 1)
+        c = {"id": cid, "def": did, "x": 5 * len(comps), "y": 0, "rot": 0, "flip": False, "label": label,
+             "value": d["value"] if value is None else value}
+        c.update(kw)
+        comps.append(c)
+        return cid
+
+    def w(a, ap, b, bp):
+        def idx(cid, name):
+            c = next(c for c in comps if c["id"] == cid)
+            rd = cb.RDef(next(b for b in cb.BUILTIN_DEFS if b["id"] == c["def"]))
+            return next(i for i, p in enumerate(rd.pins) if p["name"] == name)
+        wires.append({"id": "w%d" % (len(wires) + 1), "a": [a, idx(a, ap)], "b": [b, idx(b, bp)]})
+
+    def data():
+        return {"components": comps, "wires": wires, "definitions": []}
+    return add, w, data
+
+
+def _amp_circuit():
+    """Non-inverting op-amp (gain 11) with a logic gate and a regulator: parts that need subcircuits."""
+    add, w, data = _builder()
+    vin = add("dc_source", "VIN", "0.5 V")
+    g = add("ground", "GND1")
+    w(vin, "−", g, "GND")
+    u1 = add("opamp", "U1", "LM741")
+    w(vin, "+", u1, "IN+")
+    rf, rg = add("resistor", "RF", "10 kΩ"), add("resistor", "RG", "1 kΩ")
+    w(u1, "OUT", rf, "1"); w(rf, "2", u1, "IN−"); w(rg, "1", u1, "IN−"); w(rg, "2", g, "GND")
+    vp, vn = add("vcc", "PWR1", "+15 V"), add("vcc", "PWR2", "-15 V")
+    w(u1, "V+", vp, "V"); w(u1, "V−", vn, "V")
+    x = add("xor", "G1")
+    p5 = add("vcc", "PWR3", "+5 V")
+    w(x, "A", p5, "V"); w(x, "B", g, "GND")
+    rx = add("resistor", "R3", "10 kΩ"); w(x, "Y", rx, "1"); w(rx, "2", g, "GND")
+    bat = add("battery", "B1", "9 V"); w(bat, "−", g, "GND")
+    reg = add("reg7805", "U2", ""); w(bat, "+", reg, "IN"); w(reg, "GND", g, "GND")
+    rl = add("resistor", "RL", "100 Ω"); w(reg, "OUT", rl, "1"); w(rl, "2", g, "GND")
+    return data()
+
+
+class SpiceExport(unittest.TestCase):
+    def test_spice_num(self):
+        self.assertEqual(cb.spice_num(4700), "4.7k")
+        self.assertEqual(cb.spice_num(1e6), "1Meg")
+        self.assertEqual(cb.spice_num(100e-9), "100n")
+        self.assertEqual(cb.spice_num(-15), "-15")
+        self.assertEqual(cb.spice_num(0), "0")
+        self.assertEqual(cb.spice_num(1e-18), "1e-18")
+
+    def test_every_example_exports_in_every_analysis(self):
+        for name in EXAMPLES:
+            app = FakeApp(cb.build_example(name))
+            for kind, directive in (("op", ".op"), ("tran", ".tran "), ("ac", ".ac dec ")):
+                text, skipped = cb.spice_netlist(app, {"type": kind})
+                lines = text.splitlines()
+                self.assertTrue(lines[0].startswith("*"), name)   # SPICE's first line is the title
+                self.assertEqual(lines[-1], ".end", name)
+                self.assertTrue(any(l.startswith(directive) for l in lines), (name, kind))
+                text.encode("ascii")   # plain ASCII for every SPICE
+                for s in skipped:
+                    self.assertIn(s, text)
+
+    def test_values_match_the_simulator(self):
+        text, skipped = cb.spice_netlist(FakeApp(_amp_circuit()), {"type": "op"})
+        self.assertEqual(skipped, [])
+        self.assertIn(".subckt CB_OPAMP inm inp out vp vn", text)
+        self.assertIn(".subckt CB_XOR a b y", text)
+        self.assertIn(".subckt CB_REG_5 in out gnd", text)
+        self.assertIn("RF N2 N3 10k", text.replace("RF N3 N2", "RF N2 N3"))
+        self.assertRegex(text, r"(?m)^V_B1 \S+ \S+ DC 9$")       # battery + internal resistance
+        self.assertRegex(text, r"(?m)^R_B1_int \S+ 0 1\.5$")
+        self.assertRegex(text, r"(?m)^V_PWR2 NEG15V 0 DC -15$")   # rails become sources
+
+    def test_ac_input_and_unwired_op_amp_supplies(self):
+        add, w, data = _builder()
+        v = add("ac_source", "V1", "1 V 1 kHz")
+        g = add("ground", "GND1")
+        w(v, "2", g, "GND")
+        u = add("opamp", "U1", "LM358")
+        w(v, "1", u, "IN+"); w(u, "OUT", u, "IN−")
+        text, _ = cb.spice_netlist(FakeApp(data()), {"type": "ac", "fstart": 10, "fstop": 1e5, "ppd": 5})
+        self.assertRegex(text, r"(?m)^V1 \S+ 0 DC 0 AC 1 SIN\(0 1 1k\)$")
+        self.assertIn(".ac dec 5 10 100k", text)
+        self.assertRegex(text, r"(?m)^V_U1_VP U1_VP 0 DC 15$")      # ±15 V assumed, as in the simulator
+        self.assertIn("CB_OPAMP_LM358", text)
+
+    def test_circuit_that_cannot_simulate_is_refused(self):
+        add, w, data = _builder()
+        p = add("vcc", "PWR1", "+5 V")
+        g = add("ground", "GND1")
+        w(p, "V", g, "GND")
+        with self.assertRaises(cb.SimError):
+            cb.spice_netlist(FakeApp(data()))
+
+    @unittest.skipUnless(shutil.which("ngspice"), "ngspice is not installed")
+    def test_ngspice_agrees_with_the_simulator(self):
+        import re
+        import subprocess
+        app = FakeApp(_amp_circuit())
+        text, _ = cb.spice_netlist(app, {"type": "op"})
+        text = text.replace(".end\n", ".control\nop\nprint all\n.endc\n.end\n")
+        d = tempfile.mkdtemp(dir=_TMP_HOME)
+        path = os.path.join(d, "amp.cir")
+        with open(path, "w") as f:
+            f.write(text)
+        res = subprocess.run(["ngspice", "-b", path], capture_output=True, text=True, timeout=120).stdout
+        vals = {m.group(1): float(m.group(2))
+                for m in re.finditer(r"(?m)^\s*([\w.]+)\s*=\s*([-+0-9.eE]+)\s*$", res)}
+        sim = cb.Sim(app)
+        x = sim._dc(sim.S, [0.0] * sim.N)
+        checked = 0
+        for i in range(1, sim.nn + 1):
+            nm = cb._spice_ident(sim.node_names[i]).lower()
+            if nm in vals:
+                self.assertAlmostEqual(vals[nm], x[i - 1], delta=0.01, msg=nm)
+                checked += 1
+        self.assertGreaterEqual(checked, 6)
+
+
+class KicadExport(unittest.TestCase):
+    def _parse(self, text):
+        import re
+        toks = re.findall(r'\(|\)|"(?:\\.|[^"\\])*"|[^\s()"]+', text)
+        depth = 0
+        for t in toks:
+            depth += t == "("
+            depth -= t == ")"
+            self.assertGreaterEqual(depth, 0)
+        self.assertEqual(depth, 0)
+        return toks
+
+    def test_pads_follow_the_real_parts(self):
+        app = FakeApp(cb.build_example("transistor"))
+        text, skipped = cb.kicad_netlist(app)
+        self._parse(text)
+        self.assertTrue(text.startswith('(export (version "E")'))
+        # an NPN in TO-92 is E-B-C, and an LED's pad 1 is its cathode
+        self.assertIn('(node (ref "Q1") (pin "2") (pinfunction "B"))', text)
+        self.assertIn('(node (ref "D1") (pin "1") (pinfunction "K"))', text)
+        self.assertIn('(footprint "Package_TO_SOT_THT:TO-92_Inline")', text)
+
+    def test_simulation_parts_are_left_out(self):
+        text, skipped = cb.kicad_netlist(FakeApp(cb.build_example("divider")))
+        self.assertIn("V1", skipped)
+        self.assertNotIn('(ref "V1")', text)
+        self.assertNotIn('(ref "GND', text)
+
+    def test_every_example_and_duplicate_labels(self):
+        for name in EXAMPLES:
+            self._parse(cb.kicad_netlist(FakeApp(cb.build_example(name)))[0])
+        add, w, data = _builder()
+        a, b = add("resistor", "R1"), add("resistor", "R1")
+        w(a, "2", b, "1")
+        text, _ = cb.kicad_netlist(FakeApp(data()))
+        self.assertIn('(ref "R1")', text)
+        self.assertIn('(ref "R2")', text)
+
+
 # --------------------------------------------------------------------------- the real app (needs a display)
 def _tk_root():
     try:
@@ -538,6 +739,55 @@ class AppTests(unittest.TestCase):
             cb.filedialog.askopenfilename = orig
         self.assertIn("custom_imp", self.app.library.custom)
         self.assertTrue(any("could not be used" in m for _n, m in self.messages))
+
+    def test_symbol_style_switch_redraws(self):
+        self.app.load_example("halfadder")
+        try:
+            self.app.set_symbol_style("iec")
+            self.app._redraw()
+            self.pump()
+            self.assertEqual(self.app.settings["symbol_style"], "iec")
+            self.assertEqual(self.app.v_symbol_style.get(), "iec")
+            rd = self.app.rdef(next(c for c in self.app.comps.values() if c["def"] == "xor"))
+            self.assertTrue(any(p["t"] == "text" and p["s"] == "=1" for p in rd.prims))
+        finally:
+            self.app.set_symbol_style("ansi")
+
+    def test_spice_dialog_previews_and_saves(self):
+        self.app.load_example("rc")
+        dlg = cb.SpiceDialog(self.app)
+        self.pump()
+        self.assertIn(".tran ", dlg.text)
+        dlg.v_type.set("ac")
+        dlg._show_fields()
+        self.assertIn(".ac dec ", dlg.text)
+        self.assertIn("AC 1", dlg.text)
+        dlg.v_fstop.set("nonsense")
+        dlg._refresh()
+        self.assertIn("disabled", dlg.b_save.state())
+        dlg.v_fstop.set("1 MHz")
+        dlg._refresh()
+        path = os.path.join(tempfile.mkdtemp(dir=_TMP_HOME), "rc.cir")
+        orig = cb.filedialog.asksaveasfilename
+        cb.filedialog.asksaveasfilename = lambda **k: path
+        try:
+            dlg._save()
+        finally:
+            cb.filedialog.asksaveasfilename = orig
+        with open(path) as f:
+            self.assertIn(".ac dec 20 ", f.read())
+
+    def test_kicad_export_from_the_menu(self):
+        self.app.load_example("transistor")
+        path = os.path.join(tempfile.mkdtemp(dir=_TMP_HOME), "t.net")
+        orig = cb.filedialog.asksaveasfilename
+        cb.filedialog.asksaveasfilename = lambda **k: path
+        try:
+            self.app.export_kicad()
+        finally:
+            cb.filedialog.asksaveasfilename = orig
+        with open(path, encoding="utf-8") as f:
+            self.assertIn('(ref "Q1")', f.read())
 
 
 if __name__ == "__main__":

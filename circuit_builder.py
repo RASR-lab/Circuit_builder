@@ -11,6 +11,8 @@ A friendly circuit / wiring-diagram editor for undergraduate students.
   * See which pins are connected (the netlist) and check the circuit for shorts.
   * Simulate the circuit: live voltages and currents, an oscilloscope and
     frequency-response (Bode) plots.
+  * Draw with ANSI / IEEE or IEC 60617 symbols, and export the circuit as a SPICE
+    netlist (LTspice, ngspice) or a KiCad netlist (for a PCB).
 
 Runs on Windows (also macOS / Linux) with Python 3.8 or newer.
 Only the standard library is used (Tkinter ships with the Windows installer).
@@ -52,7 +54,7 @@ except Exception:  # Pillow not installed: pictures still work (PNG/GIF, plus JP
     _PILOps = None
 
 APP_NAME = "Circuit Builder"
-APP_VERSION = "1.7"
+APP_VERSION = "1.8"
 FILE_EXT = ".circuit"
 LIB_EXT = ".cblib"
 G = 24  # pixels per grid unit at 100 % zoom
@@ -558,6 +560,98 @@ SYMBOLS = {
 # Drawing used while a switch is closed / a push button is held down
 ALT_SYMBOLS = {"switch": sym_switch_closed, "pushbutton": sym_pushbutton_pressed}
 
+
+# --------------------------------------------------------------------------
+# IEC 60617 symbols
+# --------------------------------------------------------------------------
+# The drawings above follow ANSI / IEEE Std 315 (zigzag resistors, curved logic gates), as used in
+# most North American textbooks.  Europe and many other countries use IEC 60617 instead.  These
+# replace only the symbols that differ; every pin stays in the same place, so a circuit looks right
+# in either style and switching style never moves a wire.
+def iec_resistor():
+    return [L((0, 1), (1, 1)), PG((1, 0.62), (3, 0.62), (3, 1.38), (1, 1.38), fill="white"), L((3, 1), (4, 1))]
+
+
+def iec_potentiometer():
+    return iec_resistor() + [L((2, 0), (2, 0.38)), _head((2, 0.6), (2, 0.0), 0.26)]
+
+
+def iec_ldr():
+    return iec_resistor() + _arrow(1.0, -0.45, 1.5, 0.15) + _arrow(1.55, -0.45, 2.05, 0.15)
+
+
+def iec_capacitor_pol():
+    # positive plate drawn open, negative plate solid
+    return [L((0, 1), (1.75, 1)), PG((1.75, 0.35), (1.95, 0.35), (1.95, 1.65), (1.75, 1.65)),
+            PG((2.15, 0.35), (2.35, 0.35), (2.35, 1.65), (2.15, 1.65), fill="stroke"),
+            L((2.35, 1), (4, 1)), TX(1.35, 0.42, "+", 10, True)]
+
+
+def iec_dc_source():
+    # ideal voltage source: a circle with a line through it along the conductor
+    return [L((1, 0), (1, 4)), CI(1, 2, 0.9, "white"), L((1, 1.1), (1, 2.9)),
+            TX(1.48, 1.5, "+", 11, True), TX(1.48, 2.5, "−", 11, True)]
+
+
+def iec_current_source():
+    # ideal current source: a circle with a line across the conductor; arrow = direction of current
+    return ([L((1, 0), (1, 1.1)), CI(1, 2, 0.9, "white"), L((1, 2.9), (1, 4)), L((0.1, 2), (1.9, 2))]
+            + _arrow(2.3, 2.65, 2.3, 1.35, 0.26))
+
+
+def _iec_gate(qualifier, inverted=False, single=False):
+    """IEC 60617-12 logic gate: a rectangle with the function written in it (&, ≥1, =1, 1).
+    An inverted output is shown with the small circle, as on the ANSI symbols."""
+    if single:
+        y0, y1, ym = 0.2, 1.8, 1.0
+        prims = [L((0, 1), (1, 1))]
+    else:
+        y0, y1, ym = 0.3, 3.7, 2.0
+        prims = _gate_inputs()
+    prims.insert(0, PG((1, y0), (3.6, y0), (3.6, y1), (1, y1), fill="white"))
+    prims.append(TX(2.3, y0 + 0.55, qualifier, 12, True))
+    if inverted:
+        prims += [CI(3.75, ym, 0.15, "white"), L((3.9, ym), (5, ym))]
+    else:
+        prims.append(L((3.6, ym), (5, ym)))
+    return prims
+
+
+def iec_opamp():
+    # IEC 60617-13 amplifier: a rectangle holding the triangle-and-infinity sign
+    return [PG((1, 0.8), (5, 0.8), (5, 5.2), (1, 5.2), fill="white"),
+            L((0, 2), (1, 2)), L((0, 4), (1, 4)), L((5, 3), (6, 3)),
+            L((3, 0), (3, 0.8)), L((3, 5.2), (3, 6)),
+            PG((2.3, 2.55), (2.3, 3.45), (3.05, 3.0)), TX(3.6, 3.0, "∞", 13),
+            TX(1.4, 2, "−", 13, True), TX(1.4, 4, "+", 13, True)]
+
+
+IEC_SYMBOLS = {
+    "resistor": iec_resistor, "potentiometer": iec_potentiometer, "ldr": iec_ldr,
+    "capacitor_pol": iec_capacitor_pol, "dc_source": iec_dc_source,
+    "current_source": iec_current_source, "opamp": iec_opamp,
+    "and": lambda: _iec_gate("&"), "nand": lambda: _iec_gate("&", True),
+    "or": lambda: _iec_gate("≥1"), "nor": lambda: _iec_gate("≥1", True),
+    "xor": lambda: _iec_gate("=1"), "not": lambda: _iec_gate("1", True, single=True),
+}
+# Where the name / value goes when the IEC drawing would cover the usual spot
+IEC_LABEL_PT = {"opamp": (5.3, 0.55)}
+
+SYMBOL_STYLES = [("ansi", "ANSI / IEEE (zigzag resistor, curved gates)"),
+                 ("iec", "IEC 60617 (box resistor, rectangular gates)")]
+SYMBOL_STYLE = {"style": "ansi"}
+
+
+def set_symbol_style(style):
+    SYMBOL_STYLE["style"] = "iec" if style == "iec" else "ansi"
+
+
+def symbol_func(name):
+    """The drawing function for a symbol in the current style (ANSI or IEC)."""
+    if SYMBOL_STYLE["style"] == "iec" and name in IEC_SYMBOLS:
+        return IEC_SYMBOLS[name]
+    return SYMBOLS.get(name)
+
 # --------------------------------------------------------------------------
 # Built-in component library
 # --------------------------------------------------------------------------
@@ -853,7 +947,7 @@ class RDef:
         if self.symbol == "box":
             self._build_box(d)
         else:
-            fn = SYMBOLS.get(self.symbol)
+            fn = symbol_func(self.symbol)
             self.prims = fn() if fn else []
             alt = ALT_SYMBOLS.get(self.symbol)
             self.alt_prims = alt() if alt else None
@@ -876,7 +970,9 @@ class RDef:
         self.bbox = (min(xs), min(ys), max(xs), max(ys))
         self.label_pt = None
         if self.box is None:
-            if d.get("label_pt"):
+            if SYMBOL_STYLE["style"] == "iec" and self.symbol in IEC_LABEL_PT:
+                self.label_pt = IEC_LABEL_PT[self.symbol]
+            elif d.get("label_pt"):
                 self.label_pt = tuple(d["label_pt"])
             else:
                 dirs = {p["dir"] for p in self.pins}
@@ -1484,6 +1580,7 @@ def clean_settings(s):
               "wire_color": is_color,
               "text_size": lambda v: v in [k for k, _n, _f in TEXT_SIZES],
               "theme": lambda v: v in ("light", "dark"),
+              "symbol_style": lambda v: v in [k for k, _n in SYMBOL_STYLES],
               "show_grid": lambda v: isinstance(v, bool),
               "show_volts": lambda v: isinstance(v, bool)}
     for k, ok in checks.items():
@@ -3893,6 +3990,8 @@ class NetlistWindow(tk.Toplevel):
         bar.pack(fill="x")
         ttk.Button(bar, text="Copy as text", command=self._copy).pack(side="left")
         ttk.Button(bar, text="Export…", command=app.export_netlist).pack(side="left", padx=6)
+        ttk.Button(bar, text="SPICE…", command=app.export_spice).pack(side="left")
+        ttk.Button(bar, text="KiCad…", command=app.export_kicad).pack(side="left", padx=6)
         ttk.Button(bar, text="Close", command=self.close).pack(side="right")
         self.protocol("WM_DELETE_WINDOW", self.close)
         self.nets = []
@@ -3927,6 +4026,211 @@ class NetlistWindow(tk.Toplevel):
         self.destroy()
 
 
+def _nice_si(v, unit):
+    """0.01, 's' -> '10 ms' (as short as possible, for an entry box)."""
+    if not v:
+        return "0 " + unit
+    for p, pre in _FMT_PFX:
+        if abs(v) >= p * 0.9995:
+            break
+    return "%g %s%s" % (round(v / p, 4), pre, unit)
+
+
+class SpiceDialog(tk.Toplevel):
+    """Export a SPICE netlist: choose the analysis, see the netlist as it will be saved, save or copy it."""
+
+    def __init__(self, app):
+        super().__init__(app.root)
+        self.app = app
+        s = app.ui_scale
+        try:
+            self.sim = Sim(app)
+            err = self.sim.error
+        except Exception as e:   # never let an export problem take the editor down
+            err = str(e)
+        if err:
+            self.destroy()
+            messagebox.showerror(APP_NAME, "Can’t write a SPICE netlist yet. The simulator reports:\n\n%s"
+                                 % err, parent=app.root)
+            return
+        self.title("Export SPICE netlist — " + APP_NAME)
+        self.configure(bg=C["bg"])
+        self.transient(app.root)
+        self.geometry("%dx%d" % (int(980 * s), int(640 * s)))
+        self.minsize(int(760 * s), int(480 * s))
+        self.text = ""
+        self._job = None
+        a = spice_default_analysis(self.sim)
+        self.inputs = spice_ac_inputs(self.sim)
+
+        bar = ttk.Frame(self, style="Bg.TFrame", padding=(12, 0, 12, 12))
+        bar.pack(side="bottom", fill="x")
+        self.b_save = ttk.Button(bar, text="Save…", style="Accent.TButton", command=self._save)
+        self.b_save.pack(side="right")
+        ttk.Button(bar, text="Copy", command=self._copy).pack(side="right", padx=8)
+        ttk.Button(bar, text="Close", command=self.destroy).pack(side="right")
+        self.status = tk.Label(bar, text="", bg=C["bg"], fg=C["muted"], font=app.f_ui, anchor="w", justify="left")
+        self.status.pack(side="left", fill="x", expand=True)
+
+        outer = ttk.Frame(self, style="Bg.TFrame", padding=12)
+        outer.pack(fill="both", expand=True)
+        outer.columnconfigure(1, weight=1)
+        outer.rowconfigure(0, weight=1)
+
+        left = ttk.Frame(outer, style="Card.TFrame", padding=14)
+        left.grid(row=0, column=0, sticky="nsw", padx=(0, 10))
+        wrap = int(300 * s)
+        ttk.Label(left, text="Analysis", style="CardTitle.TLabel").pack(anchor="w")
+        ttk.Label(left, text="SPICE runs one analysis per file. The netlist uses the same values and "
+                             "models as the simulator here, so you can compare the results.",
+                  style="Hint.TLabel", wraplength=wrap, justify="left").pack(anchor="w", pady=(2, 8))
+        self.v_type = tk.StringVar(value=a["type"])
+        for key, name in SPICE_ANALYSES:
+            ttk.Radiobutton(left, text=name, value=key, variable=self.v_type, style="Card.TRadiobutton",
+                            command=self._show_fields).pack(anchor="w", pady=1)
+
+        self.f_tran = ttk.Frame(left, style="Inner.TFrame")
+        self.v_tstop = tk.StringVar(value=_nice_si(a["tstop"], "s"))
+        self.v_tstep = tk.StringVar(value=_nice_si(a["tstep"], "s"))
+        self._field(self.f_tran, 0, "Stop time", self.v_tstop)
+        self._field(self.f_tran, 1, "Time step", self.v_tstep)
+
+        self.f_ac = ttk.Frame(left, style="Inner.TFrame")
+        ttk.Label(self.f_ac, text="Input source", style="Panel.TLabel").grid(row=0, column=0, sticky="w", pady=2)
+        self.v_src = tk.StringVar(value=self.inputs[0][1] if self.inputs else "")
+        cb = ttk.Combobox(self.f_ac, textvariable=self.v_src, values=[lab for _c, lab in self.inputs],
+                          state="readonly", width=14)
+        cb.grid(row=0, column=1, sticky="ew", pady=2, padx=(8, 0))
+        if not self.inputs:
+            self.v_src.set("(no voltage source)")
+            cb.state(["disabled"])
+        self.v_fstart = tk.StringVar(value=_nice_si(a["fstart"], "Hz"))
+        self.v_fstop = tk.StringVar(value=_nice_si(a["fstop"], "Hz"))
+        self.v_ppd = tk.StringVar(value=str(a["ppd"]))
+        self._field(self.f_ac, 1, "From", self.v_fstart)
+        self._field(self.f_ac, 2, "To", self.v_fstop)
+        self._field(self.f_ac, 3, "Points per decade", self.v_ppd)
+        self.hint = ttk.Label(left, text="", style="Hint.TLabel", wraplength=wrap, justify="left")
+        self.hint.pack(side="bottom", anchor="w", pady=(10, 0))
+
+        right = ttk.Frame(outer, style="Bg.TFrame")
+        right.grid(row=0, column=1, sticky="nsew")
+        right.columnconfigure(0, weight=1)
+        right.rowconfigure(0, weight=1)
+        mono = ("Consolas", 10) if os.name == "nt" else ("DejaVu Sans Mono", 9)
+        self.tx = tk.Text(right, wrap="none", font=mono, relief="solid", borderwidth=1, **text_colors())
+        self.tx.grid(row=0, column=0, sticky="nsew")
+        sy = ttk.Scrollbar(right, orient="vertical", command=self.tx.yview)
+        sy.grid(row=0, column=1, sticky="ns")
+        sx = ttk.Scrollbar(right, orient="horizontal", command=self.tx.xview)
+        sx.grid(row=1, column=0, sticky="ew")
+        self.tx.configure(yscrollcommand=sy.set, xscrollcommand=sx.set)
+
+        for v in (self.v_tstop, self.v_tstep, self.v_src, self.v_fstart, self.v_fstop, self.v_ppd):
+            v.trace_add("write", lambda *_: self._later())
+        self._show_fields()
+
+    def _field(self, parent, row, label, var):
+        ttk.Label(parent, text=label, style="Panel.TLabel").grid(row=row, column=0, sticky="w", pady=2)
+        ttk.Entry(parent, textvariable=var, width=14).grid(row=row, column=1, sticky="ew", pady=2, padx=(8, 0))
+
+    def _show_fields(self):
+        t = self.v_type.get()
+        self.f_tran.pack_forget()
+        self.f_ac.pack_forget()
+        if t == "tran":
+            self.f_tran.pack(anchor="w", fill="x", pady=(10, 0))
+            self.hint.configure(text="Plots voltages against time, like the oscilloscope. Times can have units: "
+                                     "10 ms, 2 s, 50 us.")
+        elif t == "ac":
+            self.f_ac.pack(anchor="w", fill="x", pady=(10, 0))
+            self.hint.configure(text="The input source gets an AC amplitude of 1 V, so each node’s voltage is the "
+                                     "gain from the input to that node (plot it in dB for a Bode plot).")
+        else:
+            self.hint.configure(text="Finds the steady DC voltage at every node and the current in every source.")
+        self._refresh()
+
+    def _later(self):
+        if self._job:
+            self.after_cancel(self._job)
+        self._job = self.after(200, self._refresh)
+
+    def analysis(self):
+        """The chosen analysis, or (None, message) if a box can't be read."""
+        t = self.v_type.get()
+        a = {"type": t}
+        if t == "tran":
+            stop, step = qty(self.v_tstop.get(), "s"), qty(self.v_tstep.get(), "s")
+            if not stop or stop <= 0:
+                return None, "Couldn’t read the stop time."
+            if not step or step <= 0 or step > stop:
+                return None, "The time step must be a time shorter than the stop time."
+            a.update(tstop=stop, tstep=step)
+        elif t == "ac":
+            f0, f1 = qty(self.v_fstart.get(), "hz"), qty(self.v_fstop.get(), "hz")
+            try:
+                ppd = int(float(self.v_ppd.get()))
+            except ValueError:
+                ppd = 0
+            if not f0 or not f1 or f0 <= 0 or f1 <= f0:
+                return None, "The frequencies must be positive, with “To” above “From”."
+            if not 1 <= ppd <= 1000:
+                return None, "Points per decade must be a whole number from 1 to 1000."
+            src = next((cid for cid, lab in self.inputs if lab == self.v_src.get()), None)
+            a.update(fstart=f0, fstop=f1, ppd=ppd, ac_source=src)
+        return a, None
+
+    def _refresh(self):
+        self._job = None
+        a, err = self.analysis()
+        if err:
+            self.status.configure(text=err, fg=C["danger"])
+            self.b_save.state(["disabled"])
+            return
+        try:
+            self.text, skipped = spice_netlist(self.app, a)
+        except Exception as e:
+            log_exception(*sys.exc_info(), context="writing a SPICE netlist")
+            self.status.configure(text="Couldn’t write the netlist (%s)." % e, fg=C["danger"])
+            self.b_save.state(["disabled"])
+            return
+        self.b_save.state(["!disabled"])
+        if skipped:
+            self.status.configure(text="Not exported (no SPICE model): %s" % ", ".join(skipped[:6])
+                                  + (" …" if len(skipped) > 6 else ""), fg=C["warn"])
+        else:
+            self.status.configure(text="Every part is in the netlist.", fg=C["ok"])
+        self.tx.configure(state="normal")
+        self.tx.delete("1.0", "end")
+        self.tx.insert("1.0", self.text)
+        self.tx.configure(state="disabled")
+
+    def _copy(self):
+        if self.text:
+            self.clipboard_clear()
+            self.clipboard_append(self.text)
+            self.app.flash("SPICE netlist copied to the clipboard.")
+
+    def _save(self):
+        if not self.text:
+            return
+        app = self.app
+        path = filedialog.asksaveasfilename(
+            parent=self, title="Save SPICE netlist", defaultextension=".cir",
+            initialfile=(os.path.splitext(os.path.basename(app.path))[0] if app.path else "circuit"),
+            filetypes=[("SPICE netlist", "*.cir"), ("SPICE netlist", "*.sp")])
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(self.text)
+        except OSError as e:
+            messagebox.showerror(APP_NAME, "Could not save:\n%s" % e, parent=self)
+            return
+        app.flash("SPICE netlist saved as %s" % os.path.basename(path))
+        self.destroy()
+
+
 # --------------------------------------------------------------------------
 # Main application
 # --------------------------------------------------------------------------
@@ -3949,18 +4253,6 @@ SHORTCUTS = [
     ("F5", "Start / stop the simulation"),
 ]
 
-SPICE_MAP = {
-    "resistor": ("R", ["1", "2"], ""), "ldr": ("R", ["1", "2"], ""),
-    "capacitor": ("C", ["1", "2"], ""), "capacitor_pol": ("C", ["+", "−"], ""),
-    "inductor": ("L", ["1", "2"], ""), "fuse": ("R", ["1", "2"], "0.01"),
-    "battery": ("V", ["+", "−"], "DC"), "dc_source": ("V", ["+", "−"], "DC"),
-    "ac_source": ("V", ["1", "2"], "AC"), "current_source": ("I", ["−", "+"], "DC"),
-    "ammeter": ("V", ["+", "−"], "AMMETER"),
-    "diode": ("D", ["A", "K"], "DMOD"), "led": ("D", ["A", "K"], "DLED"),
-    "zener": ("D", ["A", "K"], "DZEN"),
-    "npn": ("Q", ["C", "B", "E"], "QNPN"), "pnp": ("Q", ["C", "B", "E"], "QPNP"),
-}
-
 
 class App:
     def __init__(self, root, open_path=None):
@@ -3979,6 +4271,8 @@ class App:
         self.show_grid = self.settings.get("show_grid", True)
         self.text_size = self.settings.get("text_size", "normal")
         set_diagram_text_size(self.text_size)
+        self.symbol_style = self.settings.get("symbol_style", "ansi")
+        set_symbol_style(self.symbol_style)
         try:
             self.ui_scale = max(1.0, min(3.0, root.winfo_fpixels("1i") / 96.0))
         except tk.TclError:
@@ -4149,6 +4443,11 @@ class App:
         s.map("TCheckbutton", indicatorbackground=[("pressed", C["clam_frame"]), ("disabled", C["clam_frame"])])
         s.configure("Card.TCheckbutton", background=C["panel"])
         s.map("Card.TCheckbutton", background=[("active", C["panel"])])
+        s.configure("TRadiobutton", indicatorbackground=C["field"], indicatorforeground=C["text"],
+                    upperbordercolor=C["chk_hi"], lowerbordercolor=C["chk_lo"])
+        s.map("TRadiobutton", indicatorbackground=[("pressed", C["clam_frame"]), ("disabled", C["clam_frame"])])
+        s.configure("Card.TRadiobutton", background=C["panel"])
+        s.map("Card.TRadiobutton", background=[("active", C["panel"])])
         s.configure("Panel.Horizontal.TScale", background=C["panel"], troughcolor=C["trough"])
         s.configure("Treeview", background=C["panel"], fieldbackground=C["panel"], foreground=C["text"],
                     borderwidth=0, rowheight=int(22 * sc), font=self.f_ui)
@@ -4189,6 +4488,8 @@ class App:
         fm.add_separator()
         fm.add_command(label="Export image (SVG)…", command=self.export_svg)
         fm.add_command(label="Export netlist…", command=self.export_netlist)
+        fm.add_command(label="Export SPICE netlist (LTspice, ngspice)…", command=self.export_spice)
+        fm.add_command(label="Export KiCad netlist (for a PCB)…", command=self.export_kicad)
         fm.add_separator()
         fm.add_command(label="Exit", command=self.on_close)
         m.add_cascade(label="File", menu=fm)
@@ -4233,6 +4534,12 @@ class App:
             tsm.add_radiobutton(label=name, variable=self.v_text_size, value=key,
                                 command=lambda: self.set_text_size(self.v_text_size.get()))
         vm.add_cascade(label="Diagram text size", menu=tsm)
+        ssm = tk.Menu(vm, tearoff=0)
+        self.v_symbol_style = tk.StringVar(value=self.symbol_style)
+        for key, name in SYMBOL_STYLES:
+            ssm.add_radiobutton(label=name, variable=self.v_symbol_style, value=key,
+                                command=lambda: self.set_symbol_style(self.v_symbol_style.get()))
+        vm.add_cascade(label="Symbol style", menu=ssm)
         vm.add_separator()
         self.v_dark = tk.BooleanVar(value=THEME["dark"])
         vm.add_checkbutton(label="Dark mode", variable=self.v_dark, command=lambda: self.set_theme(self.v_dark.get()))
@@ -5573,6 +5880,24 @@ class App:
         except tk.TclError:
             pass
 
+    def set_symbol_style(self, style):
+        """Draw parts with ANSI / IEEE or IEC 60617 symbols.  Pins never move, so wires are unaffected."""
+        style = "iec" if style == "iec" else "ansi"
+        self.symbol_style = style
+        set_symbol_style(style)
+        try:
+            self.v_symbol_style.set(style)
+        except AttributeError:
+            pass
+        self.library._cache.clear()   # resolved drawings are cached per part type
+        self.settings["symbol_style"] = style
+        self.save_settings()
+        self.request_redraw()
+        try:
+            self._lib_select()
+        except tk.TclError:
+            pass
+
     def _toggle_grid(self):
         self.show_grid = self.v_grid.get()
         self.settings["show_grid"] = self.show_grid
@@ -6821,7 +7146,7 @@ class App:
         path = filedialog.asksaveasfilename(title="Export netlist", defaultextension=".txt",
                                             initialfile=(os.path.splitext(os.path.basename(self.path))[0] if self.path else "circuit") + "_netlist",
                                             filetypes=[("Text netlist", "*.txt"), ("Spreadsheet (CSV)", "*.csv"),
-                                                       ("SPICE netlist (basic parts)", "*.cir")])
+                                                       ("SPICE netlist", "*.cir"), ("KiCad netlist", "*.net")])
         if not path:
             return
         ext = os.path.splitext(path)[1].lower()
@@ -6835,9 +7160,17 @@ class App:
                             c = self.comps[k[0]]
                             rd = self.rdef(c)
                             wr.writerow([n["name"], c.get("label", ""), rd.name, rd.pins[k[1]]["name"], c.get("value", "")])
-            elif ext in (".cir", ".sp", ".spice", ".net"):
+            elif ext in (".cir", ".sp", ".spice", ".ckt"):
+                try:
+                    text = self.spice_text()
+                except SimError as e:
+                    messagebox.showerror(APP_NAME, "Can’t write a SPICE netlist yet:\n\n%s" % e, parent=self.root)
+                    return
                 with open(path, "w", encoding="utf-8") as f:
-                    f.write(self.spice_text())
+                    f.write(text)
+            elif ext == ".net":
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(self.kicad_text())
             else:
                 with open(path, "w", encoding="utf-8") as f:
                     f.write(self.netlist_text())
@@ -6846,55 +7179,35 @@ class App:
             return
         self.flash("Netlist exported to %s" % os.path.basename(path))
 
-    def spice_text(self):
-        pm = self.pin_net_map()
-        lines = ["* %s SPICE netlist (basic parts only) — %s" % (APP_NAME, os.path.basename(self.path) if self.path else "Untitled")]
-        models = set()
-        has_gnd = False
-        for cid, c in self.comps.items():
-            rd = self.rdef(c)
-            spec = SPICE_MAP.get(c["def"])
-            label = re.sub(r"\W", "_", c.get("label") or "X")
-            if c["def"] == "ground":
-                has_gnd = True
-                continue
-            if c["def"] == "vcc":
-                continue
-            if not spec:
-                lines.append("* %s (%s) not exported" % (label, rd.name))
-                continue
-            letter, pin_names, kind = spec
-            nodes = []
-            for pn in pin_names:
-                idx = next((i for i, p in enumerate(rd.pins) if p["name"] == pn), None)
-                net = pm.get((cid, idx)) if idx is not None else None
-                if net is None:
-                    nodes.append("NC_%s_%s" % (label, re.sub(r"\W", "", pn) or "p"))
-                else:
-                    nodes.append("0" if net["name"] == "GND" else re.sub(r"\W", "_", net["name"]))
-            name = label if label.upper().startswith(letter) else letter + "_" + label
-            val = spice_value(c.get("value", ""))
-            if letter in ("R", "C", "L"):
-                lines.append("%s %s %s" % (name, " ".join(nodes), val or "1"))
-            elif letter in ("V", "I"):
-                if kind == "AMMETER":
-                    lines.append("%s %s DC 0" % (name, " ".join(nodes)))
-                elif kind == "AC":
-                    lines.append("%s %s AC %s" % (name, " ".join(nodes), val or "1"))
-                else:
-                    lines.append("%s %s DC %s" % (name, " ".join(nodes), val or "0"))
-            else:
-                lines.append("%s %s %s" % (name, " ".join(nodes), kind))
-                models.add(kind)
-        model_lines = {"DMOD": ".model DMOD D", "DLED": ".model DLED D(IS=1e-22 N=1.5 RS=2)",
-                       "DZEN": ".model DZEN D(BV=5.1)",
-                       "QNPN": ".model QNPN NPN(BF=100)", "QPNP": ".model QPNP PNP(BF=100)"}
-        for m in sorted(models):
-            lines.append(model_lines.get(m, "* model %s" % m))
-        if not has_gnd:
-            lines.insert(1, "* WARNING: no Ground symbol — SPICE needs a node named 0.")
-        lines += [".op", ".end"]
-        return "\n".join(lines) + "\n"
+    def spice_text(self, analysis=None):
+        """The circuit as a SPICE netlist (raises SimError if it can't be simulated)."""
+        return spice_netlist(self, analysis)[0]
+
+    def export_spice(self):
+        """Choose an analysis, preview the SPICE netlist and save it."""
+        SpiceDialog(self)
+
+    def export_kicad(self):
+        path = filedialog.asksaveasfilename(
+            title="Export KiCad netlist", defaultextension=".net",
+            initialfile=(os.path.splitext(os.path.basename(self.path))[0] if self.path else "circuit"),
+            filetypes=[("KiCad netlist", "*.net")])
+        if not path:
+            return
+        text, skipped = kicad_netlist(self)
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+        except OSError as e:
+            messagebox.showerror(APP_NAME, "Could not export:\n%s" % e)
+            return
+        msg = "KiCad netlist exported to %s." % os.path.basename(path)
+        if skipped:
+            msg += " Left out (simulation only): %s." % ", ".join(skipped[:5]) + (" …" if len(skipped) > 5 else "")
+        self.flash(msg)
+
+    def kicad_text(self):
+        return kicad_netlist(self)[0]
 
     def is_mcu(self, c):
         """Is this placed part treated as a microcontroller?  A part can override its type's setting."""
@@ -7042,6 +7355,539 @@ def spice_value(v):
         suf = "Meg" + suf[1:]
     suf = re.sub(r"(?i)(hz|v|a|f|h)$", "", suf) if suf.lower() not in ("meg",) else suf
     return num + suf
+
+
+# ==========================================================================
+# SPICE export
+# ==========================================================================
+# The netlist is written from the simulator's own models (the Sim built for the circuit), so every
+# value, the choice of ground and the handling of unconnected pins are exactly what the app
+# simulates, and LTspice / ngspice give the same answers.  Parts that only exist as digital logic in
+# the app (flip-flops, 74HC chips, the 555, boards) have no standard SPICE model and are listed in
+# the file as not exported.  Plain SPICE3 syntax is used, with B sources (arbitrary behavioural
+# sources) for the op-amp, gates and regulator, which LTspice and ngspice both read.
+
+_SPICE_SUFFIXES = (("T", 1e12), ("G", 1e9), ("Meg", 1e6), ("k", 1e3), ("", 1.0),
+                   ("m", 1e-3), ("u", 1e-6), ("n", 1e-9), ("p", 1e-12), ("f", 1e-15))
+
+
+def spice_num(v):
+    """A number in SPICE notation: 4700 -> '4.7k', 1e6 -> '1Meg', 1e-7 -> '100n'."""
+    v = float(v)
+    if v == 0 or not math.isfinite(v):
+        return "0"
+    a = abs(v)
+    for suf, mul in _SPICE_SUFFIXES:
+        if a >= mul * (1 - 1e-9):
+            txt = "%.6g" % (v / mul)
+            if "e" not in txt:
+                return txt + suf
+            break
+    return "%.6g" % v
+
+
+def _spice_ident(text, fallback="X"):
+    """Turn a net or part name into something every SPICE accepts (letters, digits, _)."""
+    s = (text or "").strip().replace("−", "-").replace("µ", "u").replace("μ", "u")
+    if s.startswith("+"):
+        s = s[1:]
+    elif s.startswith("-"):
+        s = "NEG" + s[1:]
+    s = re.sub(r"[^A-Za-z0-9_]+", "_", s).strip("_")
+    return s or fallback
+
+
+SPICE_ANALYSES = [("op", "Operating point (.op): DC voltages and currents"),
+                  ("tran", "Transient (.tran): voltages over time, like the oscilloscope"),
+                  ("ac", "AC sweep (.ac): frequency response, like the Bode plot")]
+
+
+def spice_ac_inputs(sim):
+    """Voltage sources that can drive an AC sweep: [(part id, label)], AC sources first."""
+    srcs = [d for d in sim.devs if isinstance(d, VSource) and d.kind in ("source", "battery")]
+    srcs.sort(key=lambda d: 0 if d.wave == "sine" else 1)
+    return [(d.cid, d.label) for d in srcs]
+
+
+def spice_default_analysis(sim):
+    """A sensible analysis for the circuit, from the time scale the simulator picked."""
+    Td = sim.T_disp
+    timevar = any(d.timevar for d in sim.devs)
+    reactive = any(d.reactive for d in sim.devs)
+    tstop = 5.0 * Td if Td else 10e-3
+    a = {"type": "tran" if (timevar or reactive) else "op",
+         "tstop": tstop, "tstep": min(sim.h, tstop / 500.0) if Td else tstop / 500.0,
+         "fstart": 1.0, "fstop": 1e6, "ppd": 20, "ac_source": None}
+    if Td:
+        fc = 1.0 / (2 * math.pi * Td)
+        a["fstart"] = 10.0 ** math.floor(math.log10(fc) - 3)
+        a["fstop"] = 10.0 ** math.ceil(math.log10(fc) + 3)
+    ins = spice_ac_inputs(sim)
+    if ins:
+        a["ac_source"] = ins[0][0]
+    return a
+
+
+def _opamp_subckt(name, dh, dl):
+    hi, lo = "(V(vp)-%s)" % spice_num(dh), "(V(vn)+%s)" % spice_num(dl)
+    half = "max((%s-%s)/2,1e-3)" % (hi, lo)
+    return [".subckt %s inm inp out vp vn" % name,
+            "* Op-amp, same model as Circuit Builder: open-loop gain 200k; the output swings to",
+            "* within %s V of V+ and %s V of V-, through 50 ohms." % (spice_num(dh), spice_num(dl)),
+            "Bgain o 0 V=(%s+%s)/2+%s*tanh(2e5*(V(inp)-V(inm))/%s)" % (hi, lo, half, half),
+            "Rout o out 50",
+            ".ends %s" % name]
+
+
+_GATE_EXPR = {"and": "SA*SB", "nand": "1-SA*SB", "or": "SA+SB-SA*SB", "nor": "1-(SA+SB-SA*SB)",
+              "xor": "SA+SB-2*SA*SB", "not": "1-SA"}
+
+
+def _gate_subckt(kind):
+    s = lambda pin: "1/(1+exp(min(40,max(-40,-8*(V(%s)-2.5)))))" % pin
+    one = kind == "not"
+    name = "CB_" + kind.upper()
+    expr = _GATE_EXPR[kind].replace("SA", s("a")).replace("SB", s("b"))
+    lines = [".subckt %s %s" % (name, "a y" if one else "a b y"),
+             "* 5 V logic gate, same model as Circuit Builder: inputs switch at 2.5 V and have",
+             "* 1 Meg pull-downs; the output is 0 V or 5 V through 50 ohms.",
+             "Rpa a 0 1Meg"]
+    if not one:
+        lines.append("Rpb b 0 1Meg")
+    return lines + ["Bout o 0 V=5*(%s)" % expr, "Rout o y 50", ".ends %s" % name]
+
+
+def _regulator_subckt(name, vreg):
+    soft = lambda x: "(max(%s,0)+0.05*ln(1+exp(-abs(%s)/0.05)))" % (x, x)
+    g = soft("V(in,gnd)-2")
+    v = spice_num(vreg)
+    return [".subckt %s in out gnd" % name,
+            "* Linear regulator, same model as Circuit Builder: OUT is the smaller of %s V and" % v,
+            "* (IN - 2 V), smoothed; the load current is drawn from IN.",
+            "Bout a gnd V=%s-%s" % (v, soft("%s-%s" % (v, g))),
+            "Vsense a b 0",
+            "Rout b out 0.02",
+            "Fin in gnd Vsense 1",
+            ".ends %s" % name]
+
+
+def spice_netlist(app, analysis=None, title=None):
+    """The circuit as a SPICE netlist.  Returns (text, skipped labels).  Raises SimError when the
+    circuit can't be simulated at all (SPICE couldn't run it either)."""
+    sim = Sim(app)
+    if sim.error:
+        raise SimError(sim.error)
+    a = dict(spice_default_analysis(sim))
+    a.update(analysis or {})
+
+    # ---- node names: the app's net names, made SPICE-safe and unique (SPICE ignores case)
+    node_name, used = {0: "0"}, {"0"}
+    for i in range(1, sim.nn + 1):
+        base = _spice_ident(sim.node_names[i], "N%d" % i)
+        nm, k = base, 2
+        while nm.lower() in used:
+            nm, k = "%s_%d" % (base, k), k + 1
+        used.add(nm.lower())
+        node_name[i] = nm
+    seen_nodes = set()
+
+    def nd(i):
+        seen_nodes.add(i)
+        return node_name[i]
+
+    names = set()
+
+    def ename(letter, label):
+        lab = _spice_ident(label, "1")
+        base = lab if lab[:1].upper() == letter and len(lab) > 1 else letter + "_" + lab
+        nm, k = base, 2
+        while nm.lower() in names:
+            nm, k = "%s_%d" % (base, k), k + 1
+        names.add(nm.lower())
+        return nm
+
+    def extra_node(base):
+        nm, k = _spice_ident(base), 2
+        b = nm
+        while nm.lower() in used:
+            nm, k = "%s_%d" % (b, k), k + 1
+        used.add(nm.lower())
+        return nm
+
+    models, subckts = OrderedDict(), OrderedDict()
+
+    def model(name, line):
+        models.setdefault(name, line)
+        return name
+
+    def diode_model(d):
+        if d.led:
+            col = next((n for n, _vf, c in LED_COLORS if c == d.led), "led")
+            name = "D_LED_" + col.upper()
+        elif d.bv is not None:
+            name = "DZ_" + spice_num(d.bv).replace(".", "V")
+        elif abs(d.Is - 14.1e-9) < 1e-15:
+            name = "D_1N400X"
+        elif abs(d.Is - 3e-6) < 1e-12:
+            name = "D_SCHOTTKY"
+        else:
+            name = "D_1N4148"
+        params = "IS=%s N=%s" % (spice_num(d.Is), "%g" % d.N)
+        if d.bv is not None:
+            params += " BV=%s IBV=%s" % (spice_num(d.bv), spice_num(d.IZT))
+        return model(name, ".model %s D(%s)" % (name, params))
+
+    lines, notes, skipped, probes = [], [], [], []
+    ac_src = a.get("ac_source") if a["type"] == "ac" else None
+    if a["type"] == "ac" and not any(cid == ac_src for cid, _l in spice_ac_inputs(sim)):
+        ins = spice_ac_inputs(sim)
+        ac_src = ins[0][0] if ins else None
+    for d in sim.devs:
+        lab = d.label
+        n = d.n
+        if isinstance(d, Block):
+            continue
+        if isinstance(d, LDR):
+            lines.append("* %s: light level %d %%" % (lab, round(float(d.comp.get("light", 50)))))
+            lines.append("%s %s %s %s" % (ename("R", lab), nd(n[0]), nd(n[1]), spice_num(d.res())))
+        elif isinstance(d, Resistor):
+            what = {"voltmeter": "voltmeter (10 Meg across its pins; it reads the voltage between them)",
+                    "lamp": "lamp (its hot resistance)", "motor": "motor (its running resistance)",
+                    "buzzer": "buzzer (its resistance at the rated voltage)"}.get(d.kind)
+            if what:
+                lines.append("* %s is a %s" % (lab, what))
+            lines.append("%s %s %s %s" % (ename("R", lab), nd(n[0]), nd(n[1]), spice_num(d.R)))
+        elif isinstance(d, (Switch, Fuse)):
+            if isinstance(d, Switch):
+                state = ("pressed" if d.closed() else "not pressed") if d.push else ("closed" if d.closed() else "open")
+                lines.append("* %s is %s (a switch is a small or a huge resistance in SPICE)" % (lab, state))
+            lines.append("%s %s %s %s" % (ename("R", lab), nd(n[0]), nd(n[1]), spice_num(1.0 / d.g_())))
+        elif isinstance(d, Pot):
+            r1, r2 = d.parts()
+            lines.append("* %s: potentiometer, wiper at %d %%" % (lab, round(100 * float(d.comp.get("wiper", 0.5)))))
+            lines.append("%s %s %s %s" % (ename("R", lab + "_A"), nd(n[0]), nd(n[1]), spice_num(r1)))
+            lines.append("%s %s %s %s" % (ename("R", lab + "_B"), nd(n[1]), nd(n[2]), spice_num(r2)))
+        elif isinstance(d, Capacitor):
+            lines.append("%s %s %s %s" % (ename("C", lab), nd(n[0]), nd(n[1]), spice_num(d.C)))
+        elif isinstance(d, Inductor):
+            lines.append("%s %s %s %s" % (ename("L", lab), nd(n[0]), nd(n[1]), spice_num(d.L)))
+        elif isinstance(d, VSource):
+            ac = " AC 1" if d.cid == ac_src else ""
+            if d.kind == "rail":
+                lines.append("%s %s %s DC %s" % (ename("V", lab), nd(n[0]), nd(n[1]), spice_num(d.V0)))
+            elif d.kind == "ammeter":
+                nm = ename("V", lab)
+                lines.append("* %s is an ammeter: a 0 V source; its reading is I(%s)" % (lab, nm))
+                lines.append("%s %s %s DC 0" % (nm, nd(n[0]), nd(n[1])))
+            elif d.wave == "sine":
+                lines.append("%s %s %s DC 0%s SIN(0 %s %s)" % (ename("V", lab), nd(n[0]), nd(n[1]), ac,
+                                                              spice_num(d.V0), spice_num(d.f)))
+            elif d.wave == "square":
+                per = 1.0 / d.f
+                tr = per / 1000.0
+                lines.append("%s %s %s DC 0%s PULSE(0 %s 0 %s %s %s %s)"
+                             % (ename("V", lab), nd(n[0]), nd(n[1]), ac, spice_num(d.V0), spice_num(tr),
+                                spice_num(tr), spice_num(per / 2 - tr), spice_num(per)))
+            elif d.R:
+                nm = ename("V", lab)
+                mid = extra_node(nm + "_int")
+                lines.append("* %s: battery with %s ohms internal resistance" % (lab, spice_num(d.R)))
+                lines.append("%s %s %s DC %s%s" % (nm, nd(n[0]), mid, spice_num(d.V0), ac))
+                lines.append("%s %s %s %s" % (ename("R", lab + "_int"), mid, nd(n[1]), spice_num(d.R)))
+            else:
+                lines.append("%s %s %s DC %s%s" % (ename("V", lab), nd(n[0]), nd(n[1]), spice_num(d.V0), ac))
+        elif isinstance(d, ISource):
+            lines.append("* %s: SPICE current flows into the first node; it comes out of the + pin" % lab)
+            lines.append("%s %s %s DC %s" % (ename("I", lab), nd(n[1]), nd(n[0]), spice_num(d.I)))
+        elif isinstance(d, Diode):
+            lines.append("%s %s %s %s" % (ename("D", lab), nd(n[0]), nd(n[1]), diode_model(d)))
+        elif isinstance(d, BJT):
+            kind = "NPN" if d.pol > 0 else "PNP"
+            mname = model("Q_%s_BF%s" % (kind, "%g" % d.BF),
+                          ".model Q_%s_BF%s %s(IS=%s BF=%s BR=%s)" % (kind, "%g" % d.BF, kind, spice_num(d.Is),
+                                                                    "%g" % d.BF, "%g" % d.BR))
+            lines.append("%s %s %s %s %s" % (ename("Q", lab), nd(n[0]), nd(n[1]), nd(n[2]), mname))
+        elif isinstance(d, NMOS):
+            low = (d.comp.get("value") or "").lower()
+            tag = "IRL" if "irl" in low else "IRF" if "irf" in low else "2N7000"
+            mname = "M_" + tag if (d.vth, d.K, d.lam) in ((1.5, 20.0, 0.01), (3.0, 10.0, 0.01), (2.1, 0.05, 0.01)) \
+                else "M_NMOS_%d" % (len(models) + 1)
+            model(mname, ".model %s NMOS(LEVEL=1 VTO=%s KP=%s LAMBDA=%s)"
+                  % (mname, "%g" % d.vth, "%g" % d.K, "%g" % d.lam))
+            lines.append("%s %s %s %s %s %s W=1u L=1u" % (ename("M", lab), nd(n[1]), nd(n[0]), nd(n[2]), nd(n[2]), mname))
+        elif isinstance(d, OpAmp):
+            key = (d.drop_hi, d.drop_lo)
+            sname = {(1.5, 1.5): "CB_OPAMP", (1.5, 0.02): "CB_OPAMP_LM358",
+                     (0.02, 0.02): "CB_OPAMP_RAIL"}.get(key, "CB_OPAMP_%d" % (len(subckts) + 1))
+            subckts.setdefault(sname, _opamp_subckt(sname, d.drop_hi, d.drop_lo))
+            sup = []
+            for fixed, idx, tag in ((d.fixed_hi, 3, "VP"), (d.fixed_lo, 4, "VN")):
+                if fixed is None:
+                    sup.append(nd(n[idx]))
+                else:
+                    sn = extra_node(lab + "_" + tag)
+                    lines.append("%s %s 0 DC %s" % (ename("V", lab + "_" + tag), sn, spice_num(fixed)))
+                    sup.append(sn)
+            if d.fixed_hi is not None or d.fixed_lo is not None:
+                notes.append("%s: supply pins not wired, so ±15 V supplies are added (as in the simulator)." % lab)
+            lines.append("%s %s %s %s %s %s %s" % (ename("X", lab), nd(n[0]), nd(n[1]), nd(n[2]),
+                                                   sup[0], sup[1], sname))
+        elif isinstance(d, Gate):
+            sname = "CB_" + d.kind.upper()
+            subckts.setdefault(sname, _gate_subckt(d.kind))
+            lines.append("%s %s %s" % (ename("X", lab), " ".join(nd(k) for k in n), sname))
+        elif isinstance(d, Regulator):
+            sname = "CB_REG_" + spice_num(d.vreg).replace(".", "V")
+            subckts.setdefault(sname, _regulator_subckt(sname, d.vreg))
+            lines.append("%s %s %s %s %s" % (ename("X", lab), nd(n[0]), nd(n[1]), nd(n[2]), sname))
+        elif isinstance(d, Probe):
+            if d.wired:
+                probes.append((lab, nd(n[0])))
+        else:
+            skipped.append(lab)
+
+    # parts with no simulation model at all (boards, modules, parts drawn without a circuit)
+    for cid, c in app.comps.items():
+        if cid in sim.by_cid or c.get("def") in ("ground", "vcc", PORT_DEF):
+            continue
+        rd = app.rdef(c)
+        if any((cid, i) in sim.wired for i in range(len(rd.pins))):
+            skipped.append(c.get("label") or rd.name)
+
+    src = os.path.basename(getattr(app, "path", None) or "") or "Untitled"
+    out = ["* %s" % (title or "%s circuit: %s" % (APP_NAME, src)),
+           "* Written by %s %s for LTspice and ngspice (SPICE3 syntax)." % (APP_NAME, APP_VERSION),
+           "* Values and models match the %s simulator, so the results should agree." % APP_NAME,
+           "*",
+           "* To run it:",
+           "*   LTspice: File > Open (file type: Netlists), then Run. Click a wire to plot its voltage.",
+           "*   ngspice: ngspice <this file>, then type  run  and, for example,  plot v(%s)"
+           % (probes[0][1] if probes else next((node_name[i] for i in sorted(seen_nodes) if i), "out"))]
+    if probes:
+        out.append("*")
+        out.append("* Voltage probes: " + ", ".join("%s = V(%s)" % p for p in probes))
+    gnd_note = [m for sev, _c, m in sim.notes if "Ground symbol" in m]
+    for m in gnd_note + notes:
+        out.append("* Note: " + m)
+    if skipped:
+        out.append("*")
+        out.append("* Not exported (no standard SPICE model; they are digital or module parts in %s):" % APP_NAME)
+        out.append("*   " + ", ".join(dict.fromkeys(skipped)))
+    out += ["", "* ---- parts"] + lines
+    shunt = [i for i in sorted(seen_nodes) if i]
+    if shunt:
+        out += ["", "* ---- 1 T ohm from every node to ground, as in the %s simulator," % APP_NAME,
+                "* ---- so a node that only touches capacitors or open switches is never left floating"]
+        out += ["%s %s 0 1T" % (ename("R", "GMIN_" + node_name[i]), node_name[i]) for i in shunt]
+    if models:
+        out += ["", "* ---- device models (the same parameters the simulator uses)"] + list(models.values())
+    for sub in subckts.values():
+        out += [""] + sub
+    out += ["", "* ---- analysis"]
+    if a["type"] == "tran":
+        out.append(".tran %s %s" % (spice_num(a["tstep"]), spice_num(a["tstop"])))
+    elif a["type"] == "ac":
+        if ac_src is None:
+            out.append("* An AC sweep needs a voltage source to drive it; there is none, so nothing will change.")
+        else:
+            lab = sim.by_cid[ac_src].label
+            out.append("* %s is the AC input (AC 1 = 1 V), so V(node) is the gain from %s to that node." % (lab, lab))
+        out.append(".ac dec %d %s %s" % (int(a["ppd"]), spice_num(a["fstart"]), spice_num(a["fstop"])))
+    else:
+        out.append(".op")
+    out.append(".end")
+    text = "\n".join(out) + "\n"
+    for a_, b_ in (("±", "+/-"), ("−", "-"), ("–", "-"), ("—", "-"), ("“", '"'), ("”", '"'), ("’", "'"),
+                   ("Ω", "ohm"), ("µ", "u"), ("μ", "u"), ("°", " deg"), ("…", "...")):
+        text = text.replace(a_, b_)
+    text = text.encode("ascii", "replace").decode("ascii")   # every SPICE reads plain ASCII
+    return text, list(dict.fromkeys(skipped))
+
+
+# ==========================================================================
+# KiCad netlist export
+# ==========================================================================
+# A KiCad netlist (.net, S-expression format "E", read by KiCad 6 and newer) lists the parts and
+# which pads are joined.  Pcbnew reads it with File > Import > Netlist to start a PCB.  Pads are
+# numbered like the real part (a diode's pad 1 is its cathode, a 2N2222's pads are E-B-C, a 741's
+# output is pin 6), so footprints come out wired correctly.  Parts that only exist for simulation
+# (sources, meters, probes, ground and power-rail symbols) are left out: on a board, power comes
+# in through a connector.  A part without a footprint here gets one in KiCad's Assign Footprints.
+
+KICAD_SIM_ONLY = {"ground", "vcc", "probe", PORT_DEF, "voltmeter", "ammeter",
+                  "dc_source", "ac_source", "square_source", "current_source"}
+
+_TO92 = "Package_TO_SOT_THT:TO-92_Inline"
+_TO220 = "Package_TO_SOT_THT:TO-220-3_Vertical"
+_DIP8 = "Package_DIP:DIP-8_W7.62mm"
+_DIP14 = "Package_DIP:DIP-14_W7.62mm"
+
+# part type -> (library, symbol, footprint, {pin name: pad number})
+KICAD_PARTS = {
+    "resistor": ("Device", "R", "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal",
+                 {"1": "1", "2": "2"}),
+    "capacitor": ("Device", "C", "Capacitor_THT:C_Disc_D5.0mm_W2.5mm_P5.00mm", {"1": "1", "2": "2"}),
+    "capacitor_pol": ("Device", "C_Polarized", "Capacitor_THT:CP_Radial_D5.0mm_P2.00mm", {"+": "1", "−": "2"}),
+    "inductor": ("Device", "L", "Inductor_THT:L_Axial_L5.3mm_D2.2mm_P10.16mm_Horizontal_Vishay_IM-1",
+                 {"1": "1", "2": "2"}),
+    "potentiometer": ("Device", "R_Potentiometer", "Potentiometer_THT:Potentiometer_Bourns_3386P_Vertical",
+                      {"1": "1", "W": "2", "2": "3"}),
+    "ldr": ("Device", "R_Photo", "OptoDevice:R_LDR_5.1x4.3mm_P3.4mm_Vertical", {"1": "1", "2": "2"}),
+    "fuse": ("Device", "Fuse", "", {"1": "1", "2": "2"}),
+    "battery": ("Device", "Battery_Cell", "", {"+": "1", "−": "2"}),
+    "switch": ("Switch", "SW_SPST", "", {"1": "1", "2": "2"}),
+    "pushbutton": ("Switch", "SW_Push", "Button_Switch_THT:SW_PUSH_6mm", {"1": "1", "2": "2"}),
+    "lamp": ("Device", "Lamp", "", {"1": "1", "2": "2"}),
+    "motor": ("Motor", "Motor_DC", "", {"1": "1", "2": "2"}),
+    "diode": ("Device", "D", "Diode_THT:D_DO-35_SOD27_P7.62mm_Horizontal", {"K": "1", "A": "2"}),
+    "zener": ("Device", "D_Zener", "Diode_THT:D_DO-35_SOD27_P7.62mm_Horizontal", {"K": "1", "A": "2"}),
+    "led": ("Device", "LED", "LED_THT:LED_D5.0mm", {"K": "1", "A": "2"}),
+    "npn": ("Device", "Q_NPN_EBC", _TO92, {"E": "1", "B": "2", "C": "3"}),
+    "pnp": ("Device", "Q_PNP_EBC", _TO92, {"E": "1", "B": "2", "C": "3"}),
+    "nmos": ("Device", "Q_NMOS_SGD", _TO92, {"S": "1", "G": "2", "D": "3"}),
+    "opamp": ("Amplifier_Operational", "LM741", _DIP8,
+              {"IN−": "2", "IN+": "3", "V−": "4", "OUT": "6", "V+": "7"}),
+    "timer555": ("Timer", "NE555P", _DIP8,
+                 {"GND": "1", "TRIG": "2", "OUT": "3", "RESET": "4", "CTRL": "5", "THRES": "6",
+                  "DISCH": "7", "VCC": "8"}),
+    "reg7805": ("Regulator_Linear", "L7805", _TO220, {"IN": "1", "GND": "2", "OUT": "3"}),
+    "tmp36": ("", "", _TO92, {"+VS": "1", "VOUT": "2", "GND": "3"}),
+    "ic8": ("", "", _DIP8, None),
+    "ic14": ("", "", _DIP14, None),
+}
+for _id in ("74hc00", "74hc02", "74hc04", "74hc08", "74hc32", "74hc86", "74hc74"):
+    # pins are already in the chip's order; KiCad has no 74HC08 / 74HC32 symbol, but the 74LS ones
+    # have the same pinout
+    KICAD_PARTS[_id] = ("74xx", {"74hc08": "74LS08", "74hc32": "74LS32"}.get(_id, _id.upper()), _DIP14, None)
+# modules plug in through a row of header pins, in the module's pin order
+for _id in ("servo", "hcsr04", "lcd_i2c", "relay"):
+    KICAD_PARTS[_id] = ("Connector_Generic", "", "header", None)
+
+
+def _kicad_spec(did, value, n_pins):
+    """(library, symbol, footprint, {pin name: pad}) with the variants a value selects."""
+    lib, part, fp, pads = KICAD_PARTS.get(did, ("", "", "", None))
+    low = (value or "").lower()
+    if did == "diode" and re.search(r"400[1-7]|58[12][0-9]", low):
+        fp = "Diode_THT:D_DO-41_SOD81_P10.16mm_Horizontal"
+    elif did in ("npn", "pnp") and re.search(r"bc(32|33|54|55)\d", low):
+        part = "Q_%s_CBE" % did.upper()
+        pads = {"C": "1", "B": "2", "E": "3"}
+    elif did == "nmos" and ("irf" in low or "irl" in low):
+        part, fp, pads = "Q_NMOS_GDS", _TO220, {"G": "1", "D": "2", "S": "3"}
+    elif did == "nmos" and "bs170" in low:
+        part, pads = "Q_NMOS_DGS", {"D": "1", "G": "2", "S": "3"}
+    elif did == "opamp" and ("358" in low or "324" in low):
+        # first amplifier of a dual (LM358, 8 pins) or quad (LM324, 14 pins) package
+        if "324" in low:
+            part, fp, pads = "LM324", _DIP14, {"OUT": "1", "IN−": "2", "IN+": "3", "V+": "4", "V−": "11"}
+        else:
+            part, pads = "LM358", {"OUT": "1", "IN−": "2", "IN+": "3", "V−": "4", "V+": "8"}
+    if fp == "header":
+        part = "Conn_01x%02d" % n_pins
+        fp = "Connector_PinHeader_2.54mm:PinHeader_1x%02d_P2.54mm_Vertical" % n_pins
+    return lib, part, fp, pads
+
+
+def _kq(s):
+    return '"%s"' % str(s).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _kicad_value(value, fallback):
+    v = (value or "").strip()
+    if not v:
+        return fallback
+    m = re.match(r"^([0-9.]+)\s*([pnuµμmkKMG]?)\s*(Ω|ohms?|F|H)?$", v)
+    if m:   # "4.7 kΩ" -> "4.7k", "100 nF" -> "100nF": the way values are written on a PCB
+        unit = {"Ω": "", "ohm": "", "ohms": ""}.get(m.group(3) or "", m.group(3) or "")
+        return m.group(1) + m.group(2).replace("µ", "u").replace("μ", "u") + unit
+    return v
+
+
+def kicad_netlist(app):
+    """The circuit as a KiCad netlist.  Returns (text, labels of the parts left out)."""
+    comps, wires, _blocks, _problems = flatten_circuit(app.library, app.comps, app.wires)
+    nets = compute_nets_of(comps, wires)
+    parts, skipped, refs = [], [], set()
+    for cid, c in comps.items():
+        d = app.library.get(c.get("def")) or {}
+        if d.get("subcircuit"):
+            continue   # its parts are in the list themselves
+        model = d.get("sim") or c.get("def")
+        if c.get("def") in KICAD_SIM_ONLY or model in KICAD_SIM_ONLY:
+            if c.get("def") not in ("ground", "vcc", "probe", PORT_DEF):
+                skipped.append(c.get("label") or d.get("name", "?"))
+            continue
+        parts.append((cid, c, d, model))
+
+    # references must be unique: a clash (two R1s, or R1 in two copies of a component) is renumbered
+    def ref_parts(lab):
+        m = re.match(r"^(.*?)(\d+)$", lab)
+        return (m.group(1), int(m.group(2))) if m else (lab, None)
+
+    taken = {}
+    for cid, c, d, _m in parts:
+        lab = re.sub(r"[^A-Za-z0-9_]+", "_", (c.get("label") or "").split("/")[-1]).strip("_") or d.get("prefix", "U")
+        pre, num = ref_parts(lab)
+        taken.setdefault(pre, set())
+        if num is not None:
+            taken[pre].add(num)
+    ref_of = {}
+    for cid, c, d, _m in parts:
+        lab = re.sub(r"[^A-Za-z0-9_]+", "_", (c.get("label") or "").split("/")[-1]).strip("_") or d.get("prefix", "U")
+        if lab in refs:
+            pre, _n = ref_parts(lab)
+            k = 1
+            while k in taken[pre] or "%s%d" % (pre, k) in refs:
+                k += 1
+            taken[pre].add(k)
+            lab = "%s%d" % (pre, k)
+        refs.add(lab)
+        ref_of[cid] = lab
+
+    pad_of, pin_fn = {}, {}
+    out = ["(export (version \"E\")",
+           "  (design",
+           "    (source %s)" % _kq(os.path.basename(getattr(app, "path", None) or "") or "Untitled"),
+           "    (date %s)" % _kq(time.strftime("%Y-%m-%d %H:%M:%S")),
+           "    (tool %s))" % _kq("%s %s" % (APP_NAME, APP_VERSION)),
+           "  (components"]
+    for cid, c, d, model in parts:
+        rd = app.rdef(c)
+        pins = rd.pins if rd else []
+        lib, part, fp, pads = _kicad_spec(model, c.get("value"), len(pins))
+        for i, p in enumerate(pins):
+            nm = p["name"]
+            pad = (pads or {}).get(nm)
+            if pad is None:
+                pad = nm if (pads is None and model in ("ic8", "ic14")) else str(i + 1)
+            pad_of[(cid, i)] = pad
+            pin_fn[(cid, i)] = nm
+        name = d.get("name", "Part")
+        out.append("    (comp (ref %s)" % _kq(ref_of[cid]))
+        out.append("      (value %s)" % _kq(_kicad_value(c.get("value"), name)))
+        if fp:
+            out.append("      (footprint %s)" % _kq(fp))
+        out.append("      (libsource (lib %s) (part %s) (description %s))"
+                   % (_kq(lib or "CircuitBuilder"), _kq(part or _spice_ident(name, "Part")), _kq(name)))
+        out.append("      (sheetpath (names \"/\") (tstamps \"/\"))")
+        out.append("      (tstamps %s))" % _kq(str(uuid.uuid5(uuid.NAMESPACE_URL, "circuit-builder:" + cid))))
+    out.append("  )")
+    out.append("  (nets")
+    code = 0
+    for net in nets:
+        nodes = [k for k in net["pins"] if k in pad_of]
+        if not nodes:
+            continue
+        code += 1
+        out.append("    (net (code %s) (name %s)" % (_kq(code), _kq(net["name"])))
+        for k in nodes:
+            out.append("      (node (ref %s) (pin %s) (pinfunction %s))"
+                       % (_kq(ref_of[k[0]]), _kq(pad_of[k]), _kq(pin_fn[k])))
+        out[-1] += ")"
+    out.append("  )")
+    out.append(")")
+    return "\n".join(out) + "\n", list(dict.fromkeys(skipped))
 
 
 # ==========================================================================
