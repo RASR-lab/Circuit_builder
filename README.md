@@ -5,6 +5,14 @@ Drag parts onto a grid, click pin-to-pin to wire them, **turn any circuit you bu
 
 ![Circuit Builder](screenshot.png)
 
+## Video tutorial
+
+New to Circuit Builder? Watch the 4-minute walkthrough on YouTube:
+
+[![Circuit Builder video tutorial](https://img.youtube.com/vi/n3DofAPjmVw/maxresdefault.jpg)](https://youtu.be/n3DofAPjmVw)
+
+**▶ [Watch on YouTube](https://youtu.be/n3DofAPjmVw)**. It covers placing and wiring parts, editing values, simulating, making your own component from a circuit, drawing a new part, and checking and saving your work.
+
 ## Getting it running
 
 **Option A: run it with Python (quickest)**
