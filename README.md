@@ -46,6 +46,7 @@ Click **More info → Run anyway**.
 | Simulate | **▶ Simulate** (top right) or **F5**; press again to stop |
 | Light / dark mode | Click **☾** (next to Simulate; it turns into **☀** to switch back) or tick *View › Dark mode* |
 | Bigger or smaller text on the diagram | *View › Diagram text size* › **Small**, **Normal** or **Large** (remembered next time) |
+| ANSI or IEC symbols | *View › Symbol style* › **ANSI / IEEE** or **IEC 60617** (remembered next time) |
 
 Pins show **filled** when connected and **hollow** while still free.
 Hover over a pin to see its name and which net it is on.
@@ -53,6 +54,10 @@ Hover over a pin to see its name and which net it is on.
 **Dark mode** recolors every window straight away, including the Component Editor, oscilloscope and Bode plot if they are open, and the app remembers your choice next time.
 Wires and traces are drawn a little brighter in dark mode so they stand out (a *Black* wire shows as light grey), but your files keep the colors you picked, and *Export image (SVG)* always uses the normal light colors so drawings print well in lab reports.
 On Windows 10/11 the title bars turn dark too; the menu bar strip itself follows Windows' own colors.
+
+**Symbol style:** parts are drawn with ANSI / IEEE Std 315 symbols by default (zigzag resistor, curved logic gates), as in most North American textbooks.
+*View › Symbol style › IEC 60617* switches to the international symbols used in Europe and many other countries: a box resistor, rectangular gates marked `&`, `≥1`, `=1` and `1`, an amplifier box for the op-amp, and the IEC voltage and current source circles.
+Only the drawing changes. Every pin stays where it was, so you can switch at any time without disturbing your wiring, and the style also applies to exported SVG images.
 
 **Ground and power rails:** every Ground symbol is connected together, and so is every Power Rail (VCC) with the same value (e.g. `+5 V`).
 You can put a ground symbol wherever it's convenient instead of running long wires.
@@ -225,7 +230,7 @@ Circuit files also carry the custom parts they use, so opening someone's `.circu
 ## Checking your work
 
 - **Connections** (toolbar) lists every *net*, a group of pins wired together that share the same voltage.
-  Click a net to highlight it on the drawing. Export it as text, CSV (Excel), or a basic **SPICE** netlist for R, C, L, sources, diodes, LEDs, Zeners and BJTs.
+  Click a net to highlight it on the drawing. Export it as text or CSV (Excel), or as a SPICE or KiCad netlist (below).
 - **Check circuit** warns about shorted batteries and sources, parts that are shorted or not connected, free pins, and a missing ground.
   Double-click a message to jump to that part.
 - **Microcontrollers:** a board like an Arduino uses only a few of its pins, so Check circuit doesn't list unused pins on parts marked as a microcontroller.
@@ -234,6 +239,43 @@ Circuit files also carry the custom parts they use, so opening someone's `.circu
   To change it for one part in a circuit, click the part and use the **Microcontroller / dev board** checkbox in the right-hand panel (saved in the `.circuit` file).
 - **Simulate** (see above) shows what the circuit actually does and flags parts that would be damaged.
 - **File › Export image (SVG)** saves a clean drawing for lab reports, pictures included. It opens in any browser, Word or PowerPoint.
+
+## Taking your circuit to other software
+
+Circuit Builder can hand your circuit to the tools used in industry and in later courses.
+
+### SPICE (LTspice, ngspice)
+
+*File › Export SPICE netlist* opens a window where you pick one analysis and see the netlist as it will be saved:
+
+- **Operating point (`.op`)**: the DC voltage at every node, like pausing the simulation.
+- **Transient (`.tran`)**: voltages over time, like the oscilloscope. Set the stop time and time step (e.g. `5 ms`, `10 us`).
+- **AC sweep (`.ac`)**: frequency response, like the Bode plot. The chosen input source gets an AC amplitude of 1 V, so each node's voltage is the gain from the input.
+
+Open the `.cir` file in **LTspice** (*File › Open*, file type *Netlists*, then *Run*) or run it in **ngspice** (`ngspice circuit.cir`, then `run` and `plot v(N2)`).
+
+The netlist is written from the same models the built-in simulator uses, with the same values, so the results agree. Checked against ngspice, DC voltages match to within a few millivolts and the RC filter's Bode plot matches exactly:
+
+| Part | In the SPICE file |
+|---|---|
+| R, C, L, potentiometer, LDR, lamp, motor, buzzer, voltmeter | `R`, `C`, `L` elements (a pot is two resistors split at the wiper; the LDR uses its current light level) |
+| Switch, push button, fuse | A resistor: 0.01 Ω when closed, 10 GΩ when open |
+| DC, AC and square-wave sources, battery, power rails | `V` sources (`DC`, `SIN`, `PULSE`); a battery adds its internal resistance; each power rail becomes a source to ground |
+| Current source, ammeter | `I` source; an ammeter is a 0 V source whose current is the reading |
+| Diode, Zener, LED, NPN, PNP, N-MOSFET | `D`, `Q`, `M` elements with `.model` cards holding the simulator's parameters |
+| Op-amp, logic gates, 7805 regulator | Subcircuits (`.subckt`) built from behavioural `B` sources that match the simulator |
+
+Flip-flops, 74HC chips, the 555 timer and microcontroller boards behave as digital logic in Circuit Builder and have no standard SPICE model, so they are listed in the file as not exported.
+Every node also gets a 1 TΩ resistor to ground, as in the built-in simulator, so SPICE never complains about a floating node. The `B` sources are SPICE3 syntax, which LTspice and ngspice read; PSpice uses a different syntax for them.
+
+### KiCad (for a printed circuit board)
+
+*File › Export KiCad netlist* saves a `.net` file that KiCad 6 or newer opens in the PCB editor with *File › Import › Netlist*.
+
+- Each part gets a standard KiCad footprint and its pads are numbered like the real part: a diode's or LED's pad 1 is its cathode, a 2N2222 / 2N2907 / 2N7000 in TO-92 is E-B-C / S-G-D (BC547-style transistors are C-B-E and IRF / IRL MOSFETs are G-D-S in TO-220), a 741 uses DIP-8 pins 2, 3, 4, 6, 7, an LM358 / LM324 uses its first amplifier, and the 555, 7805 and 74HC chips use their datasheet pinouts.
+- Modules (servo, ultrasonic sensor, LCD, relay) become pin headers in their pin order.
+- Parts that only exist for simulation (voltage and current sources, meters, probes, and the ground and power-rail symbols) are left out: on a real board, power comes in through a connector. Their nets keep their names (`GND`, `+5V`, …).
+- Parts with no standard package (single logic gates, flip-flops, switches, the battery, lamp, Arduino) are exported without a footprint. Choose one in KiCad's *Assign Footprints* tool, or for logic use the 74HC chips, which do have one.
 
 ## Built-in parts
 
@@ -279,7 +321,7 @@ After changing `circuit_builder.py`, run the regression tests from the project f
 python -m unittest discover -s tests -v
 ```
 
-They check file loading (including damaged files), nets, chip logic, the example circuits in the simulator and the main editor actions. The ones that open the app window are skipped when there's no display; on Linux run them under `xvfb-run`. GitHub runs them automatically on every push (see `.github/workflows/tests.yml`).
+They check file loading (including damaged files), nets, chip logic, the example circuits in the simulator, ANSI and IEC symbols, the SPICE and KiCad exports and the main editor actions. If `ngspice` is installed, one test also runs an exported netlist in it and compares the voltages with the simulator. The ones that open the app window are skipped when there's no display; on Linux run them under `xvfb-run`. GitHub runs them automatically on every push (see `.github/workflows/tests.yml`).
 
 ## Troubleshooting
 
