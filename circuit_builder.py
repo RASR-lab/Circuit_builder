@@ -64,63 +64,83 @@ G = 24  # pixels per grid unit at 100 % zoom
 # --------------------------------------------------------------------------
 # Every color the app draws with lives in these two palettes.  C is the live palette:
 # set_palette() copies one of them into it, so code just reads C["..."] when drawing.
+#
+# The colors follow the University of Wisconsin-Eau Claire brand guide (2025):
+#   Royal #242B99 and Gold #EDAC1A (primary), Navy #07233D and Old Gold #B28114 (secondary),
+#   Earth #725E49, Slate #B2C5D5 and Gray #EEF3FA (neutral support),
+#   Bright Blue #0160F2, Terra Cotta #DC5901 and Yellow #FFCD28 (highlights, used sparingly).
+# Light mode is white panels on Gray with Navy text and Royal accents; dark mode uses the
+# brand's Navy background with Gold accents.  Green stays for "running" / "no problems"
+# because students read it as "OK".
+UWEC = {
+    "royal": "#242B99", "gold": "#EDAC1A", "navy": "#07233D", "old_gold": "#B28114",
+    "earth": "#725E49", "slate": "#B2C5D5", "gray": "#EEF3FA",
+    "bright_blue": "#0160F2", "terra_cotta": "#DC5901", "yellow": "#FFCD28",
+}
+
 LIGHT_C = {
     # windows and panels
-    "bg": "#eef1f5", "panel": "#ffffff", "border": "#d6dce4", "text": "#1f2933", "muted": "#6b7785",
+    "bg": "#eef3fa", "panel": "#ffffff", "border": "#d3dde8", "text": "#07233d", "muted": "#566a80",
     "field": "#ffffff",                       # text boxes, entries
-    "accent": "#2563eb",                      # lines and highlights in the accent color
-    "accent_dark": "#1d4ed8",                 # accent-colored text (custom parts, step numbers)
-    "accent_light": "#e3ecff",                # soft accent background (selection, pressed)
-    "accent_btn": "#2563eb", "accent_btn_press": "#1d4ed8", "accent_btn_off": "#dfe7f7",
+    "accent": "#2b3594",                      # lines and highlights in the accent color
+    "accent_dark": "#242b99",                 # accent-colored text (titles, custom parts, step numbers)
+    "accent_light": "#e6e8f7",                # soft accent background (selection, pressed)
+    "accent_btn": "#242b99", "accent_btn_press": "#07233d", "accent_btn_off": "#b9bde6",
     "on_btn": "#ffffff",                      # text on the colored buttons
-    "button": "#f6f8fa", "button_hover": "#edf2fa", "tool_hover": "#eef2f8", "disabled": "#a0a8b2",
-    "trough": "#e6eaf0", "thumb": "#e6eaf0", "heading": "#f3f5f8", "arrow": "#000000",
-    "clam_frame": "#dcdad5", "clam_active": "#eeebe7", "clam_disabled": "#999999",
-    "chk_hi": "#9e9a91", "chk_lo": "#cfcdc8",
-    "tip_bg": "#1f2933", "tip_fg": "#ffffff",
+    "eyebrow": "#725e49",                     # small all-caps section headings (Earth)
+    "rule": "#edac1a",                        # the gold line under the toolbar
+    "button": "#f5f8fc", "button_hover": "#e6edf6", "tool_hover": "#eaf0f8", "disabled": "#9aa8b8",
+    "trough": "#e3eaf3", "thumb": "#dbe3ee", "heading": "#eef3fa", "arrow": "#000000",
+    "clam_frame": "#e3e9f1", "clam_active": "#eef3fa", "clam_disabled": "#8a97a6",
+    "chk_hi": "#8597ab", "chk_lo": "#c4d1de",
+    "tip_bg": "#07233d", "tip_fg": "#ffffff",
     # circuit canvas
-    "canvas": "#fbfcfd", "grid": "#eef1f5", "grid_major": "#e0e5ec",
-    "stroke": "#26323f", "sym_fill": "#ffffff", "pin_on": "#26323f", "pin_off": "#8d99a6",
-    "pin_free": "#ffffff", "pinlabel": "#3e4a57",
-    "select": "#2563eb", "sel_fill": "#eaf1ff", "sel_wire": "#bfd3ff", "handle": "#ffffff",
-    "hover": "#f59e0b", "highlight": "#fde68a", "net_pin": "#d97706",
+    "canvas": "#fbfcfe", "grid": "#edf2f8", "grid_major": "#dce5ef",
+    "stroke": "#07233d", "sym_fill": "#ffffff", "pin_on": "#07233d", "pin_off": "#8597ab",
+    "pin_free": "#ffffff", "pinlabel": "#2f4660",
+    "select": "#242b99", "sel_fill": "#ecedfa", "sel_wire": "#c4c8ee", "handle": "#ffffff",
+    "hover": "#edac1a", "highlight": "#fbe3a6", "net_pin": "#b28114",
     # status colors
-    "danger": "#dc2626", "danger_btn": "#dc2626", "danger_btn_press": "#b91c1c",
-    "ok": "#16a34a", "ok_btn": "#16a34a", "ok_btn_press": "#15803d", "warn": "#b45309",
-    # simulation
-    "sim_bg": "#ecfdf3", "sim_border": "#b7e4c7", "sim_btn": "#ffffff", "sim_btn_hover": "#f3faf6",
-    "meter_bg": "#0f172a", "meter_fg": "#a7f3d0",
-    "volt_pos": "#b91c1c", "volt_neg": "#1d4ed8", "volt_bg": "#ffffff",
+    "danger": "#b84a00", "danger_btn": "#dc5901", "danger_btn_press": "#b84a00",
+    "ok": "#15803d", "ok_btn": "#16a34a", "ok_btn_press": "#15803d", "warn": "#8f6810",
+    # simulation (the Simulate button is the brand's gold call-to-action button)
+    "sim_go": "#edac1a", "sim_go_press": "#d99a0b", "on_sim": "#07233d",
+    "sim_bg": "#fdf6e4", "sim_border": "#f1d48a", "sim_btn": "#ffffff", "sim_btn_hover": "#fbf0d2",
+    "meter_bg": "#07233d", "meter_fg": "#ffcd28",
+    "volt_pos": "#b91c1c", "volt_neg": "#242b99", "volt_bg": "#ffffff",
     # oscilloscope and Bode plot
-    "plot_bg": "#ffffff", "plot_grid": "#eef1f5", "plot_zero": "#d6dce4",
-    "bode_grid": "#e6eaf0", "bode_minor": "#f3f5f8", "marker": "#ea580c",
+    "plot_bg": "#ffffff", "plot_grid": "#edf2f8", "plot_zero": "#d3dde8",
+    "bode_grid": "#e3eaf3", "bode_minor": "#f2f6fb", "marker": "#dc5901",
 }
 
 DARK_C = {
-    "bg": "#161a21", "panel": "#1e232c", "border": "#323a47", "text": "#e5e9ef", "muted": "#98a3b3",
-    "field": "#14181e",
-    "accent": "#5b9bff",
-    "accent_dark": "#93b8ff",
-    "accent_light": "#203558",
-    "accent_btn": "#2563eb", "accent_btn_press": "#1d4ed8", "accent_btn_off": "#7f9bd0",
+    "bg": "#061b30", "panel": "#07233d", "border": "#1d3a5a", "text": "#eef3fa", "muted": "#9fb2c6",
+    "field": "#051626",
+    "accent": "#6b8cff",
+    "accent_dark": "#edac1a",
+    "accent_light": "#1c2a6e",
+    "accent_btn": "#2b3594", "accent_btn_press": "#242b99", "accent_btn_off": "#5b63b5",
     "on_btn": "#ffffff",
-    "button": "#272e39", "button_hover": "#313a47", "tool_hover": "#2a323e", "disabled": "#5f6977",
-    "trough": "#20262f", "thumb": "#3a4452", "heading": "#252c36", "arrow": "#c9d1dc",
-    "clam_frame": "#272e39", "clam_active": "#313a47", "clam_disabled": "#5f6977",
-    "chk_hi": "#5f6977", "chk_lo": "#3a4452",
-    "tip_bg": "#323b49", "tip_fg": "#f3f5f8",
-    "canvas": "#12161c", "grid": "#1b2028", "grid_major": "#262d37",
-    "stroke": "#d4dae2", "sym_fill": "#12161c", "pin_on": "#d4dae2", "pin_off": "#6f7b8b",
-    "pin_free": "#12161c", "pinlabel": "#a9b4c2",
-    "select": "#5b9bff", "sel_fill": "#172540", "sel_wire": "#28467a", "handle": "#e5e9ef",
-    "hover": "#fbbf24", "highlight": "#5c4813", "net_pin": "#f59e0b",
-    "danger": "#f87171", "danger_btn": "#dc2626", "danger_btn_press": "#b91c1c",
+    "eyebrow": "#ffcd28",
+    "rule": "#edac1a",
+    "button": "#0d2c4b", "button_hover": "#143858", "tool_hover": "#11324f", "disabled": "#5a7088",
+    "trough": "#0a2540", "thumb": "#23456a", "heading": "#0c2a47", "arrow": "#c9d6e3",
+    "clam_frame": "#0d2c4b", "clam_active": "#143858", "clam_disabled": "#5a7088",
+    "chk_hi": "#5a7088", "chk_lo": "#23456a",
+    "tip_bg": "#213f63", "tip_fg": "#f5f8fc",
+    "canvas": "#04131f", "grid": "#0a1e30", "grid_major": "#12293f",
+    "stroke": "#dbe4ee", "sym_fill": "#04131f", "pin_on": "#dbe4ee", "pin_off": "#6e86a0",
+    "pin_free": "#04131f", "pinlabel": "#b2c5d5",
+    "select": "#7d96ff", "sel_fill": "#111f4a", "sel_wire": "#2c3f8f", "handle": "#eef3fa",
+    "hover": "#ffcd28", "highlight": "#5a4410", "net_pin": "#edac1a",
+    "danger": "#ff8a4c", "danger_btn": "#dc5901", "danger_btn_press": "#b84a00",
     "ok": "#4ade80", "ok_btn": "#16a34a", "ok_btn_press": "#15803d", "warn": "#fbbf24",
-    "sim_bg": "#10241a", "sim_border": "#24553b", "sim_btn": "#1a3326", "sim_btn_hover": "#22412f",
-    "meter_bg": "#05080c", "meter_fg": "#a7f3d0",
-    "volt_pos": "#fca5a5", "volt_neg": "#93c5fd", "volt_bg": "#12161c",
-    "plot_bg": "#12161c", "plot_grid": "#1f252e", "plot_zero": "#3c4655",
-    "bode_grid": "#29313c", "bode_minor": "#1b2028", "marker": "#fb923c",
+    "sim_go": "#edac1a", "sim_go_press": "#ffcd28", "on_sim": "#07233d",
+    "sim_bg": "#233339", "sim_border": "#4c4c33", "sim_btn": "#0d2c4b", "sim_btn_hover": "#143858",
+    "meter_bg": "#020b14", "meter_fg": "#ffcd28",
+    "volt_pos": "#fca5a5", "volt_neg": "#a5b4fc", "volt_bg": "#04131f",
+    "plot_bg": "#04131f", "plot_grid": "#0f2338", "plot_zero": "#2a4766",
+    "bode_grid": "#183250", "bode_minor": "#0a1e30", "marker": "#ff8a4c",
 }
 
 C = dict(LIGHT_C)
@@ -1051,6 +1071,70 @@ def anchor_for(dx, dy):
     if abs(dx) > abs(dy):
         return "w" if dx > 0 else "e"
     return "n" if dy > 0 else "s"
+
+
+# --------------------------------------------------------------------------
+# Brand fonts (UW-Eau Claire): Inter for the interface, PT Serif for headings,
+# Inter Black for small all-caps headings.  They ship in the "fonts" folder next to
+# this file (and inside the .exe) under the SIL Open Font License, and are loaded for
+# this program only: nothing is installed on the computer.  If the folder is missing
+# the app quietly falls back to the system fonts.
+# --------------------------------------------------------------------------
+BRAND_FONT_FILES = ("Inter-Regular.ttf", "Inter-Bold.ttf", "Inter-Black.ttf",
+                    "PTSerif-Regular.ttf", "PTSerif-Bold.ttf")
+UI_FONT = ["Segoe UI", 9]   # the interface font, set by App._setup_fonts (used by tooltips)
+_BRAND_FONTS = {"loaded": None}
+
+
+def resource_dir():
+    """Folder holding files that ship with the app (inside the .exe, PyInstaller unpacks them here)."""
+    return getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(__file__))
+
+
+def load_brand_fonts():
+    """Make the bundled fonts available to this process.  Returns how many files were loaded."""
+    if _BRAND_FONTS["loaded"] is not None:
+        return _BRAND_FONTS["loaded"]
+    _BRAND_FONTS["loaded"] = 0
+    folder = os.path.join(resource_dir(), "fonts")
+    paths = [os.path.join(folder, f) for f in BRAND_FONT_FILES if os.path.isfile(os.path.join(folder, f))]
+    if not paths:
+        return 0
+    n = 0
+    try:
+        import ctypes
+        if os.name == "nt":
+            gdi = ctypes.windll.gdi32
+            gdi.AddFontResourceExW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_void_p]
+            for path in paths:
+                n += 1 if gdi.AddFontResourceExW(path, 0x10, None) else 0   # 0x10 = FR_PRIVATE
+        elif sys.platform == "darwin":
+            cf = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+            ct = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreText.framework/CoreText")
+            cf.CFURLCreateFromFileSystemRepresentation.restype = ctypes.c_void_p
+            cf.CFURLCreateFromFileSystemRepresentation.argtypes = [ctypes.c_void_p, ctypes.c_char_p,
+                                                                   ctypes.c_long, ctypes.c_bool]
+            cf.CFRelease.argtypes = [ctypes.c_void_p]
+            ct.CTFontManagerRegisterFontsForURL.restype = ctypes.c_bool
+            ct.CTFontManagerRegisterFontsForURL.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p]
+            for path in paths:
+                raw = path.encode("utf-8")
+                url = cf.CFURLCreateFromFileSystemRepresentation(None, raw, len(raw), False)
+                if url:
+                    n += 1 if ct.CTFontManagerRegisterFontsForURL(url, 1, None) else 0   # 1 = this process
+                    cf.CFRelease(url)
+        else:
+            from ctypes.util import find_library
+            lib = find_library("fontconfig")
+            if lib:
+                fc = ctypes.CDLL(lib)
+                fc.FcConfigAppFontAddFile.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+                for path in paths:
+                    n += 1 if fc.FcConfigAppFontAddFile(None, path.encode(sys.getfilesystemencoding())) else 0
+    except Exception:
+        pass
+    _BRAND_FONTS["loaded"] = n
+    return n
 
 
 _FONT_CACHE = {}
@@ -2383,7 +2467,7 @@ class Tooltip:
         self.tip.wm_overrideredirect(True)
         self.tip.wm_geometry("+%d+%d" % (x, y))
         tk.Label(self.tip, text=self.text, bg=C["tip_bg"], fg=C["tip_fg"], padx=8, pady=4,
-                 font=("Segoe UI", 9)).pack()
+                 font=tuple(UI_FONT)).pack()
 
     def _leave(self, _e=None):
         if self.job:
@@ -2403,7 +2487,7 @@ _RETHEME_OPTS = ("-background", "-foreground", "-highlightbackground", "-highlig
                  "-troughcolor")
 # palette keys that classic widgets use, checked first when two keys share a color
 _RETHEME_FIRST = ("bg", "panel", "field", "text", "muted", "border", "canvas", "accent", "accent_dark",
-                  "accent_light", "ok", "danger", "warn", "sim_bg", "sim_border", "plot_bg", "tip_bg", "tip_fg")
+                  "accent_light", "eyebrow", "ok", "danger", "warn", "sim_bg", "sim_border", "plot_bg", "tip_bg", "tip_fg")
 
 
 def remember_menu_defaults(root):
@@ -3734,7 +3818,7 @@ class ComponentEditor(tk.Toplevel):
         bn = tk.Frame(self, bg=C["accent_light"], padx=14, pady=8)
         bn.pack(side="top", fill="x")
         self._banner = bn
-        tk.Label(bn, text=head, bg=C["accent_light"], fg=C["accent_dark"], font=(self.fam, 11, "bold"),
+        tk.Label(bn, text=head, bg=C["accent_light"], fg=C["accent_dark"], font=self.app.f_card,
                  anchor="w").pack(fill="x")
         tk.Label(bn, text=body, bg=C["accent_light"], fg=C["text"], anchor="w", justify="left",
                  wraplength=int(1040 * self.app.ui_scale)).pack(fill="x")
@@ -4353,13 +4437,18 @@ class App:
 
     # ------------------------------------------------------------------ setup
     def _setup_fonts(self):
+        load_brand_fonts()   # Inter + PT Serif (UW-Eau Claire brand fonts), bundled in fonts/
         fams = set(tkfont.families(self.root))
-        for f in ("Segoe UI", "Helvetica Neue", "Inter", "Arial", "DejaVu Sans"):
+        for f in ("Inter", "Segoe UI", "Helvetica Neue", "Arial", "DejaVu Sans"):
             if f in fams:
                 self.fam = f
                 break
         else:
             self.fam = tkfont.nametofont("TkDefaultFont").actual("family")
+        # headings: PT Serif, or the closest serif the computer has
+        self.fam_head = next((f for f in ("PT Serif", "Georgia", "Cambria", "DejaVu Serif", "Times New Roman")
+                              if f in fams), self.fam)
+        UI_FONT[:] = [self.fam, 9]
         for name in ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont"):
             try:
                 tkfont.nametofont(name).configure(family=self.fam, size=9)
@@ -4367,8 +4456,12 @@ class App:
                 pass
         self.f_ui = (self.fam, 9)
         self.f_bold = (self.fam, 9, "bold")
-        self.f_title = (self.fam, 12, "bold")
+        self.f_title = (self.fam_head, 13, "bold")      # panel titles (PT Serif Bold)
+        self.f_card = (self.fam_head, 11, "bold")       # titles inside dialogs
+        self.f_brand = (self.fam_head, 13, "bold")      # "Circuit Builder" in the toolbar
         self.f_small = (self.fam, 8)
+        # small all-caps headings: Inter Black (a separate family name on Windows and Linux)
+        self.f_eyebrow = ("Inter Black", 8) if "Inter Black" in fams else (self.fam, 8, "bold")
 
     def _setup_style(self):
         s = ttk.Style(self.root)
@@ -4392,11 +4485,11 @@ class App:
         s.configure("TLabel", background=C["bg"])
         s.configure("Panel.TLabel", background=C["panel"])
         s.configure("Card.TLabel", background=C["panel"], font=self.f_bold)
-        s.configure("CardTitle.TLabel", background=C["panel"], font=(self.fam, 11, "bold"))
+        s.configure("CardTitle.TLabel", background=C["panel"], foreground=C["accent_dark"], font=self.f_card)
         s.configure("Hint.TLabel", background=C["panel"], foreground=C["muted"], font=self.f_small)
         s.configure("Muted.TLabel", background=C["panel"], foreground=C["muted"])
-        s.configure("Head.TLabel", background=C["panel"], foreground=C["muted"], font=(self.fam, 8, "bold"))
-        s.configure("Title.TLabel", background=C["panel"], font=self.f_title)
+        s.configure("Head.TLabel", background=C["panel"], foreground=C["eyebrow"], font=self.f_eyebrow)
+        s.configure("Title.TLabel", background=C["panel"], foreground=C["accent_dark"], font=self.f_title)
         s.configure("Status.TLabel", background=C["bg"], foreground=C["muted"])
         s.configure("TButton", padding=(10, 4), width=0, background=C["button"], bordercolor=C["border"],
                     lightcolor=C["button"], darkcolor=C["button"], relief="flat")
@@ -4415,9 +4508,9 @@ class App:
                     lightcolor=C["accent_btn"], darkcolor=C["accent_btn"], font=self.f_bold)
         s.map("Accent.TButton", background=[("pressed", C["accent_btn_press"]), ("active", C["accent_btn_press"])],
               foreground=[("disabled", C["accent_btn_off"])])
-        s.configure("Sim.TButton", background=C["ok_btn"], foreground=C["on_btn"], bordercolor=C["ok_btn"],
-                    lightcolor=C["ok_btn"], darkcolor=C["ok_btn"], font=self.f_bold)
-        s.map("Sim.TButton", background=[("pressed", C["ok_btn_press"]), ("active", C["ok_btn_press"])])
+        s.configure("Sim.TButton", background=C["sim_go"], foreground=C["on_sim"], bordercolor=C["sim_go"],
+                    lightcolor=C["sim_go"], darkcolor=C["sim_go"], font=self.f_bold)
+        s.map("Sim.TButton", background=[("pressed", C["sim_go_press"]), ("active", C["sim_go_press"])])
         s.configure("Stop.TButton", background=C["danger_btn"], foreground=C["on_btn"], bordercolor=C["danger_btn"],
                     lightcolor=C["danger_btn"], darkcolor=C["danger_btn"], font=self.f_bold)
         s.map("Stop.TButton", background=[("pressed", C["danger_btn_press"]), ("active", C["danger_btn_press"])])
@@ -4431,8 +4524,8 @@ class App:
               background=[("readonly", C["clam_frame"])])
         s.configure("TCombobox", fieldbackground=C["field"], padding=3, arrowsize=int(12 * sc),
                     insertcolor=C["text"], arrowcolor=C["arrow"])
-        s.map("TCombobox", fieldbackground=[("readonly", "focus", "#4a6984"), ("readonly", C["clam_frame"])],
-              foreground=[("readonly", "focus", "#ffffff")],
+        s.map("TCombobox", fieldbackground=[("readonly", "focus", C["accent_btn"]), ("readonly", C["clam_frame"])],
+              foreground=[("readonly", "focus", C["on_btn"])],
               background=[("active", C["clam_active"]), ("pressed", C["clam_active"])],
               arrowcolor=[("disabled", C["clam_disabled"])])
         s.configure("TSpinbox", fieldbackground=C["field"], padding=3, arrowsize=int(10 * sc),
@@ -4610,7 +4703,24 @@ class App:
         self.b_theme.pack(side="right", padx=(0, 4))
         self.b_theme_tip = Tooltip(self.b_theme, "")
         self._theme_button_text()
-        self._tool(tb, "New", self.new_file, "New circuit (Ctrl+N)")
+        self._brand = tk.Label(tb, text=APP_NAME, font=self.f_brand, bg=C["panel"], fg=C["accent_dark"],
+                               padx=4)
+        self._brand.pack(side="left")
+        self._brand_sep = ttk.Separator(tb, orient="vertical")
+        self._brand_sep.pack(side="left", fill="y", padx=8, pady=4)
+        b_new = self._tool(tb, "New", self.new_file, "New circuit (Ctrl+N)")
+        # the app name gives way to the tools when the window is too narrow for both
+        def fit_brand(_e=None):
+            shown = bool(self._brand.winfo_manager())
+            extra = self._brand.winfo_reqwidth() + self._brand_sep.winfo_reqwidth() + 16
+            need = tb.winfo_reqwidth() + (0 if shown else extra)
+            if shown and tb.winfo_width() < need:
+                self._brand.pack_forget()
+                self._brand_sep.pack_forget()
+            elif not shown and tb.winfo_width() >= need:
+                self._brand.pack(side="left", before=b_new)
+                self._brand_sep.pack(side="left", fill="y", padx=8, pady=4, before=b_new)
+        tb.bind("<Configure>", fit_brand, add="+")
         self._tool(tb, "Open", self.open_dialog, "Open a circuit (Ctrl+O)")
         self._tool(tb, "Save", self.save, "Save (Ctrl+S)")
         self._sep(tb)
@@ -4640,7 +4750,7 @@ class App:
         self._sep(tb)
         self._tool(tb, "Connections", self.show_netlist, "List which pins are connected (netlist)")
         self._tool(tb, "Check circuit", self.check_circuit, "Look for shorts and unconnected parts")
-        self._tb_line = tk.Frame(self.root, height=1, bg=C["border"])
+        self._tb_line = tk.Frame(self.root, height=max(2, int(round(2 * sc))), bg=C["rule"])
         self._tb_line.pack(side="top", fill="x")
         self._build_simbar()
 
@@ -4671,7 +4781,7 @@ class App:
         lsb.grid(row=2, column=1, sticky="ns")
         self.lib_tree.configure(yscrollcommand=lsb.set)
         self.lib_tree.column("#0", width=int(225 * sc))
-        self.lib_tree.tag_configure("cat", font=self.f_bold, foreground=C["muted"])
+        self.lib_tree.tag_configure("cat", font=self.f_eyebrow, foreground=C["eyebrow"])
         self.lib_tree.tag_configure("custom", foreground=C["accent_dark"])
         self.lib_tree.bind("<<TreeviewSelect>>", self._lib_select)
         self.lib_tree.bind("<ButtonPress-1>", self._lib_press)
@@ -5929,6 +6039,8 @@ class App:
         self._setup_style()
         retheme_widgets(self.root, old, C)
         self.wire_sw.configure(bg=ink(self.wire_color), highlightbackground=C["border"])
+        self._tb_line.configure(bg=C["rule"])
+        self._brand.configure(bg=C["panel"], fg=C["accent_dark"])
         self._theme_button_text()
         self.settings["theme"] = "dark" if dark else "light"
         self.save_settings()
@@ -7299,7 +7411,7 @@ class CheckDialog(tk.Toplevel):
         else:
             head, col = "%d warning%s, %d note%s" % (warns, "" if warns == 1 else "s", len(issues) - warns,
                                                      "" if len(issues) - warns == 1 else "s"), C["warn"]
-        tk.Label(top, text=head, bg=C["bg"], fg=col, font=(app.fam, 12, "bold")).pack(anchor="w")
+        tk.Label(top, text=head, bg=C["bg"], fg=col, font=app.f_title).pack(anchor="w")
         ttk.Label(top, text="Double-click a line to select that part. Unused pins on microcontrollers are not listed.",
                   style="Status.TLabel").pack(anchor="w")
         mid = ttk.Frame(self, style="Bg.TFrame", padding=(14, 0))

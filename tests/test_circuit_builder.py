@@ -790,5 +790,21 @@ class AppTests(unittest.TestCase):
             self.assertIn('(ref "Q1")', f.read())
 
 
+class BrandTheme(unittest.TestCase):
+    def test_palettes_have_the_same_keys(self):
+        self.assertEqual(set(cb.LIGHT_C), set(cb.DARK_C))
+
+    def test_brand_colors_are_used(self):
+        self.assertEqual(cb.LIGHT_C["accent_dark"].lower(), cb.UWEC["royal"].lower())
+        self.assertEqual(cb.LIGHT_C["sim_go"].lower(), cb.UWEC["gold"].lower())
+        self.assertEqual(cb.DARK_C["panel"].lower(), cb.UWEC["navy"].lower())
+
+    def test_brand_fonts_ship_with_the_app(self):
+        folder = os.path.join(cb.resource_dir(), "fonts")
+        for name in cb.BRAND_FONT_FILES:
+            self.assertTrue(os.path.isfile(os.path.join(folder, name)), name)
+        self.assertGreaterEqual(cb.load_brand_fonts(), 0)   # never raises, even without font support
+
+
 if __name__ == "__main__":
     unittest.main()

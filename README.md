@@ -292,6 +292,14 @@ Component Pin (for making your own parts), resistor, capacitor, electrolytic cap
 *File › Open example* has eight ready-made circuits (the first three are also in the `examples` folder).
 The last one, *Half adder: make your own component*, is set up for practicing *Ctrl+G*.
 
+## Look and feel
+
+The app is themed with the University of Wisconsin-Eau Claire brand colors and fonts: Royal blue and Gold on white and Gray panels in light mode, and Navy with Gold accents in dark mode.
+Panel titles use **PT Serif**, everything else uses **Inter** (small section headings in Inter Black).
+Both fonts ship in the `fonts` folder (and inside the `.exe`) under the SIL Open Font License; the app loads them for itself only, so nothing gets installed on the PC.
+If the `fonts` folder is missing (for example, only `circuit_builder.py` was copied), the app falls back to the computer's own fonts.
+All colors are in `LIGHT_C` / `DARK_C` near the top of `circuit_builder.py`.
+
 ## Files and storage
 
 - Circuits are saved as `.circuit` files (plain JSON, easy to grade or diff). Switch positions and slider settings are saved with the circuit.
@@ -335,6 +343,7 @@ They check file loading (including damaged files), nets, chip logic, the example
 
 - **Nothing happens when I double-click the .bat**: Python isn't on the PATH. Reinstall Python and tick "Add python.exe to PATH".
 - **The exe build fails with `PermissionError: [WinError 5] Access is denied`**: OneDrive (or Dropbox) locked PyInstaller's files. `Build Windows EXE.bat` now builds in your TEMP folder to avoid this; if you still see it, delete any old `build` folder next to the script (pause OneDrive syncing first) and run it again.
+- **The text isn't in Inter / PT Serif**: keep the `fonts` folder next to `circuit_builder.py` (the `.exe` has the fonts built in).
 - **Everything looks tiny or huge**: use the zoom buttons or **Fit**. The app follows your Windows display scaling.
 - **Labels are hard to read**: pick *View › Diagram text size › Large*. It makes part names, values, pin names and simulation readings bigger without zooming.
 - **I lost a custom part**: check `%APPDATA%\CircuitBuilder\my_components.cblib` (and any `my_components.cblib.damaged-…` copy next to it, which you can import with *Components › Import components…*), or re-import a `.cblib` / open a `.circuit` that used it.

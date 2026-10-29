@@ -37,6 +37,7 @@ echo === Building CircuitBuilder.exe (working folder: %WORK%) ===
 if exist "%WORK%" rmdir /s /q "%WORK%"
 %PY% -m PyInstaller --noconfirm --clean --onefile --windowed ^
     --name "CircuitBuilder" --icon "%HERE%\CircuitBuilder.ico" ^
+    --add-data "%HERE%\fonts;fonts" ^
     --workpath "%WORK%\build" --specpath "%WORK%" --distpath "%WORK%\dist" ^
     "%HERE%\circuit_builder.py"
 if errorlevel 1 (
