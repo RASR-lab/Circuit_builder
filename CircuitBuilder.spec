@@ -5,7 +5,7 @@ a = Analysis(
     ['circuit_builder.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('fonts', 'fonts')],   # UW-Eau Claire brand fonts (Inter, PT Serif)
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
